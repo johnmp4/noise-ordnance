@@ -6,9 +6,16 @@
 // blocks, writes a 16-bit PCM mono WAV. No DPF, no GUI, no audio device.
 //
 // Usage: denoise_wav in.wav out.wav [blocksize] [reduction01] [hum]
+//        [smoothing] [floorLow] [floorMid] [floorHigh] [vadAdapt]
 //   blocksize   default 128 (typical DAW block)
 //   reduction01 default 1.0 (100%)
 //   hum         default 0 (off); 50 or 60 enables the hum notch module
+//   smoothing   default 0.5 (engine default); 0 = off, 1 = full
+//   floorLow/Mid/High defaults -24 dB (engine defaults); -80..0
+//   vadAdapt    default 0 (off); 0..1
+// Settings args are positional: to set vadAdapt you must set the earlier
+// ones too. Omitted settings keep the engine defaults, so existing drill
+// runs (which pass only block/reduction/hum) behave exactly as before.
 //
 // This is the regression entry point: tests/run_drills.sh drives it over the
 // drill files and tests/measure.py checks the numbers. If you change the DSP,
@@ -135,12 +142,18 @@ bool writeWav(const char* path, const Wav& wav, std::string& err) {
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::fprintf(stderr, "usage: %s in.wav out.wav [blocksize] [reduction01] [hum]\n", argv[0]);
+    std::fprintf(stderr, "usage: %s in.wav out.wav [blocksize] [reduction01] [hum] "
+                         "[smoothing] [floorLow] [floorMid] [floorHigh] [vadAdapt]\n", argv[0]);
     return 2;
   }
   const uint32_t block = argc > 3 ? static_cast<uint32_t>(std::atoi(argv[3])) : 128;
   const float reduction = argc > 4 ? static_cast<float>(std::atof(argv[4])) : 1.0f;
   const float humHz = argc > 5 ? static_cast<float>(std::atof(argv[5])) : 0.0f;
+  const float smoothing = argc > 6 ? static_cast<float>(std::atof(argv[6])) : 0.5f;
+  const float floorLow = argc > 7 ? static_cast<float>(std::atof(argv[7])) : -24.0f;
+  const float floorMid = argc > 8 ? static_cast<float>(std::atof(argv[8])) : -24.0f;
+  const float floorHigh = argc > 9 ? static_cast<float>(std::atof(argv[9])) : -24.0f;
+  const float vadAdapt = argc > 10 ? static_cast<float>(std::atof(argv[10])) : 0.0f;
   if (block == 0 || block > 8192) {
     std::fprintf(stderr, "blocksize must be 1..8192\n");
     return 2;
@@ -158,6 +171,15 @@ int main(int argc, char** argv) {
   engine.setReduction(reduction);
   if (humHz > 0.0f)
     engine.setHum(true, humHz);
+  // Settings args are optional: omitted ones keep the engine defaults
+  // (smoothing 0.5, floors -24 dB, VAD off), so drill runs that don't pass
+  // them behave exactly as before.
+  if (argc > 6)
+    engine.setSmoothing(smoothing);
+  if (argc > 7)
+    engine.setBandFloor(floorLow, floorMid, floorHigh);
+  if (argc > 10)
+    engine.setVadAdapt(vadAdapt);
 
   Wav out;
   out.sampleRate = in.sampleRate;
@@ -175,7 +197,10 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "write error: %s (%s)\n", err.c_str(), argv[2]);
     return 1;
   }
-  std::fprintf(stderr, "denoise_wav: %zu samples @ %u Hz, block %u, reduction %.2f -> %s\n",
-               total, in.sampleRate, block, reduction, argv[2]);
+  std::fprintf(stderr, "denoise_wav: %zu samples @ %u Hz, block %u, reduction %.2f, "
+               "hum %.0f, smoothing %.2f, floors %.0f/%.0f/%.0f, vad %.2f -> %s\n",
+               total, in.sampleRate, block, reduction, humHz,
+               smoothing, floorLow, floorMid, floorHigh, vadAdapt, argv[2]);
   return 0;
 }
+
