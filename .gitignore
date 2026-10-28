@@ -1,0 +1,33 @@
+# Noise Ordnance .gitignore
+
+# DPF build outputs
+bin/
+*.o
+*.d
+*.so
+*.dll
+*.dylib
+*.vst3
+
+# Test build artifacts
+tests/build/
+tests/drills/*.wav
+!tests/drills/paint-drying-clean.wav
+
+# Cloned third-party sources (restored via third_party/install-third-party.sh)
+third_party/rnnoise/
+third_party/dpf/
+# Keep the patches and install script:
+!third_party/*.patch
+!third_party/install-third-party.sh
+!third_party/README.md
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db

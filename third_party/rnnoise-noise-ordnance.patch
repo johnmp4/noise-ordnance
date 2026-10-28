@@ -1,0 +1,109 @@
+--- a/src/denoise.c	2026-10-23 12:42:22.534836590 -0400
++++ b/src/denoise.c	2026-10-23 12:42:55.773743685 -0400
+@@ -79,6 +79,14 @@
+   int last_period;
+   float mem_hp_x[2];
+   float lastg[NB_BANDS];
++  float smoothg[NB_BANDS];  /* EMA-smoothed gains */
++  float gain_smooth;        /* 0 = off, 0.3 = mild, 0.7 = strong */
++  float alpha;              /* temporal smoothing factor; 0.6 = stock */
++  float floor_low;          /* per-band floor: low (linear) */
++  float floor_mid;          /* per-band floor: mid (linear) */
++  float floor_high;         /* per-band floor: high (linear) */
++  float vad;                /* last VAD probability */
++  float vad_adapt;          /* 0 = off, 1 = full VAD adaptation */
+   RNNState rnn;
+   kiss_fft_cpx delayed_X[FREQ_SIZE];
+   kiss_fft_cpx delayed_P[FREQ_SIZE];
+@@ -282,8 +290,37 @@
+   return FRAME_SIZE;
+ }
+ 
++void rnnoise_set_gain_smoothing(DenoiseState *st, float smooth) {
++  if (!st) return;
++  st->gain_smooth = smooth < 0.0f ? 0.0f : (smooth > 0.95f ? 0.95f : smooth);
++}
++
++void rnnoise_set_alpha(DenoiseState *st, float alpha) {
++  if (!st) return;
++  st->alpha = alpha < 0.0f ? 0.0f : (alpha > 0.95f ? 0.95f : alpha);
++}
++
++void rnnoise_set_band_floor(DenoiseState *st, float low_db, float mid_db, float high_db) {
++  if (!st) return;
++  st->floor_low = (low_db <= -79.0f) ? 0.0f : powf(10.0f, low_db / 20.0f);
++  st->floor_mid = (mid_db <= -79.0f) ? 0.0f : powf(10.0f, mid_db / 20.0f);
++  st->floor_high = (high_db <= -79.0f) ? 0.0f : powf(10.0f, high_db / 20.0f);
++}
++
++void rnnoise_set_vad_adapt(DenoiseState *st, float adapt) {
++  if (!st) return;
++  st->vad_adapt = adapt < 0.0f ? 0.0f : (adapt > 1.0f ? 1.0f : adapt);
++}
++
+ int rnnoise_init(DenoiseState *st, RNNModel *model) {
+   memset(st, 0, sizeof(*st));
++  for (int i=0;i<NB_BANDS;i++) st->smoothg[i] = 1.0f;
++  st->alpha = 0.6f;
++  st->floor_low = 0.0f;
++  st->floor_mid = 0.0f;
++  st->floor_high = 0.0f;
++  st->vad = 0.0f;
++  st->vad_adapt = 0.0f;
+ #if !TRAINING
+   if (model != NULL) {
+     WeightArray *list;
+@@ -477,10 +514,28 @@
+ #endif
+     rnn_pitch_filter(st->delayed_X, st->delayed_P, st->delayed_Ex, st->delayed_Ep, st->delayed_Exp, g);
+     for (i=0;i<NB_BANDS;i++) {
+-      float alpha = .6f;
+-      /* Cap the decay at 0.6 per frame, corresponding to an RT60 of 135 ms.
++      /* Cap the decay per frame (stock 0.6 = RT60 135 ms).
+          That avoids unnaturally quick attenuation. */
+-      g[i] = MAX16(g[i], alpha*st->lastg[i]);
++      g[i] = MAX16(g[i], st->alpha*st->lastg[i]);
++      /* 3-band attenuation floor, with optional VAD adaptation. */
++      {
++        float floor_lin;
++        if (i < 8) floor_lin = st->floor_low;
++        else if (i < 16) floor_lin = st->floor_mid;
++        else floor_lin = st->floor_high;
++        if (st->vad_adapt > 0.0f && floor_lin > 0.0f) {
++          const float pause_floor = 0.01f; /* -40dB aggressive pause */
++          float adapted = st->vad * floor_lin + (1.0f - st->vad) * pause_floor;
++          floor_lin = (1.0f - st->vad_adapt) * floor_lin + st->vad_adapt * adapted;
++        }
++        if (floor_lin > 0.0f)
++          g[i] = MAX16(g[i], floor_lin);
++      }
++      if (st->gain_smooth > 0.0f) {
++        st->smoothg[i] = st->gain_smooth * st->smoothg[i]
++                       + (1.0f - st->gain_smooth) * g[i];
++        g[i] = st->smoothg[i];
++      }
+       /* Compensate for energy change across frame when computing the threshold gain.
+          Avoids leaking noise when energy increases (e.g. transient noise). */
+       st->lastg[i] = MIN16(1.f, g[i]*(st->delayed_Ex[i]+1e-3)/(Ex[i]+1e-3));
+@@ -500,6 +555,7 @@
+   RNN_COPY(st->delayed_Ex, Ex, NB_BANDS);
+   RNN_COPY(st->delayed_Ep, Ep, NB_BANDS);
+   RNN_COPY(st->delayed_Exp, Exp, NB_BANDS);
++  st->vad = vad_prob;
+   return vad_prob;
+ }
+ 
+--- a/include/rnnoise.h	2026-10-23 12:42:22.534071242 -0400
++++ b/include/rnnoise.h	2026-10-23 12:42:41.435961512 -0400
+@@ -124,6 +124,11 @@
+  */
+ RNNOISE_EXPORT void rnnoise_model_free(RNNModel *model);
+ 
++RNNOISE_EXPORT void rnnoise_set_gain_smoothing(DenoiseState *st, float smooth);
++RNNOISE_EXPORT void rnnoise_set_alpha(DenoiseState *st, float alpha);
++RNNOISE_EXPORT void rnnoise_set_band_floor(DenoiseState *st, float low_db, float mid_db, float high_db);
++RNNOISE_EXPORT void rnnoise_set_vad_adapt(DenoiseState *st, float adapt);
++
+ #ifdef __cplusplus
+ }
+ #endif
