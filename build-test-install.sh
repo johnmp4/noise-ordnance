@@ -18,6 +18,27 @@ bash third_party/dpf/utils/generate-ttl.sh third_party/bin
 echo "=== Noise Ordnance: regression tests ==="
 bash tests/run_drills.sh
 
+# Full test set, alongside the audio drills: these run before the install
+# prompt, so a failing test blocks the install (set -euo pipefail above).
+# This is the pre-PR path: build + all automated tests + install, so a
+# contributor checks the functionality in the DAW rather than relying on
+# automated tests alone.
+echo "=== Noise Ordnance: engine unit tests ==="
+bash tests/run-unit-tests.sh
+
+echo "=== Noise Ordnance: LV2 smoke test ==="
+bash tests/lv2-smoke-test.sh
+
+echo "=== Noise Ordnance: parameter contract ==="
+python3 tests/param-contract.py \
+  --ttl third_party/bin/NoiseOrdnance.lv2/NoiseOrdnance_dsp.ttl
+
+echo "=== Noise Ordnance: harness settings ==="
+bash tests/test-harness-settings.sh
+
+echo "=== Noise Ordnance: pumping check (report-only) ==="
+bash tests/check-pumping.sh
+
 echo "=== Noise Ordnance: install plugin bundles ==="
 mkdir -p "$HOME/.lv2" "$HOME/.vst3"
 
