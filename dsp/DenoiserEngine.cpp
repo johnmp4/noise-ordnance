@@ -111,6 +111,8 @@ void DenoiserEngine::init(double hostSampleRate) {
   // a D-sample echo (comb filtering). Start with a guess so the mix code has
   // a valid buffer, then measure the true D below.
   dryDelayLen_ = static_cast<uint32_t>(std::round(1456.0 * hostRate_ / 48000.0));
+  // The wet-start gate is this guess, frozen before calibration: see wetStart_.
+  wetStart_ = dryDelayLen_;
   dryDelay_.assign(dryDelayLen_ + 8192, 0.0f);
   dryDelayWrite_ = 0;
 
@@ -141,9 +143,13 @@ void DenoiserEngine::reset() {
   setSmoothing(smoothing_);
   rnnoise_set_band_floor(rnnoise_, bandFloorLowDb_, bandFloorMidDb_, bandFloorHighDb_);
   rnnoise_set_vad_adapt(rnnoise_, vadAdapt_);
-  primed_ = false;
-  outPrimed_ = false;
   consumePhase_ = 0.0;
+  outPos_ = 0;
+  // The buffers are memset below, so the counts must go too -- otherwise a
+  // reset mid-stream would leave stale counts pointing at zeroed buffers
+  // and the first renders after reset would consume zeros as wet audio.
+  pendingModelCount_ = 0;
+  pendingHostCount_ = 0;
   dryDelayWrite_ = 0;
   if (dryDelayLen_ > 0)
     std::fill(dryDelay_.begin(), dryDelay_.end(), 0.0f);
@@ -312,29 +318,14 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     for (uint32_t s = 0; s < kFrameSize; ++s)
       frameOutBuf_[s] /= 32768.0f;
     outRing_->push(frameOutBuf_, kFrameSize);
-    primed_ = true;
   }
 
-  // Still priming (no denoised audio exists yet): whole block dry.
-  if (!primed_ || outRing_ == nullptr) {
-    for (uint32_t i = 0; i < frames; ++i)
-      out[i] = sig[i] * outTrim_;
-    return;
-  }
-
-  // Output priming: hold the wet path until 2 full frames are buffered.
-  // The model produces bursty 480-sample chunks while we consume a steady
-  // frames/block; without headroom the ring periodically empties, causing
-  // a 32-sample dry glitch every 4 blocks (a 93.75 Hz buzz). With 2 frames
-  // of headroom the level oscillates safely and never hits zero.
-  if (!outPrimed_) {
-    if (outRing_->available() < kPrimeFrames * kFrameSize) {
-      for (uint32_t i = 0; i < frames; ++i)
-        out[i] = sig[i] * outTrim_;
-      return;
-    }
-    outPrimed_ = true;
-  }
+  // No whole-block priming gate here: what decides wet vs dry is the
+  // absolute output position, not a call boundary (see the render loop
+  // below). A gate that flips at a call boundary flips at a different
+  // absolute sample for different block sizes, which by itself breaks
+  // block-size invariance. The dry prefix before the fixed wet-start
+  // position gives the pipeline its headroom instead.
 
   // Model-rate samples needed to render this block. Pop EXACTLY this many:
   // the ring absorbs the model's 480-sample chunkiness, so over-popping only
@@ -346,13 +337,19 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   // over-consumes by 0.68/block and slowly drains the ring. Accumulate the
   // fraction so long-term consumption exactly matches production.
   consumePhase_ += frames * modelRatio;
-  uint32_t takeModel = static_cast<uint32_t>(consumePhase_);
-  consumePhase_ -= takeModel;
+  const uint32_t intendedModel = static_cast<uint32_t>(consumePhase_);
   const uint32_t availModel = static_cast<uint32_t>(outRing_->available());
-  takeModel = std::min(takeModel, availModel);
+  uint32_t takeModel = std::min(intendedModel, availModel);
   // Guard: never overflow the scratch buffers, even for huge blocks.
   if (takeModel > kScratchSamples - pendingModelCount_)
     takeModel = kScratchSamples - pendingModelCount_;
+  // Subtract only what was actually popped. The old code subtracted the
+  // intended amount BEFORE capping, so any shortfall (ring starved or
+  // scratch full) was lost from the accounting and the wet stream fell
+  // permanently behind the output timeline -- by a chunk-dependent amount,
+  // which is what made output block-size dependent. Retaining the debt
+  // makes the next takes catch up instead of losing samples.
+  consumePhase_ -= takeModel;
 
   // Prepend any model samples carried from the last block, then pop fresh ones.
   // (Dedicated pendingModel_ buffer: wetScratch_ is clobbered by the input
@@ -362,11 +359,24 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     pendingModelCount_ += takeModel;
   }
 
-  if (pendingModelCount_ > 0 && pendingHostCount_ == 0) {
+  // Top the wet buffer up on every call instead of waiting for it to empty.
+  // The old refill-when-empty policy let the buffer sawtooth down to zero:
+  // whenever the model ring starved for a few calls (bursty 480-sample
+  // production vs smooth consumption), takes got capped, the refill came
+  // up short, and rendering fell back to dry for a chunk-dependent run of
+  // samples -- which is what made output block-size dependent. Topping up
+  // keeps the buffer near its prefix level, so it never empties in steady
+  // state. This is safe because the resampler's output stream depends only
+  // on its input stream, not on how that input is chunked across calls
+  // (verified for regular and irregular chunkings at 1:1 and at 44.1/96 kHz
+  // ratios) -- resampling earlier changes when samples are produced, never
+  // which samples.
+  if (pendingModelCount_ > 0 && pendingHostCount_ < kScratchSamples) {
     spx_uint32_t modelIn = pendingModelCount_;
-    spx_uint32_t hostOut = kScratchSamples;
-    speex_resampler_process_float(resOut_, 0, pendingModel_, &modelIn, pendingHost_, &hostOut);
-    pendingHostCount_ = hostOut;
+    spx_uint32_t hostOut = kScratchSamples - pendingHostCount_;
+    speex_resampler_process_float(resOut_, 0, pendingModel_, &modelIn,
+                                  pendingHost_ + pendingHostCount_, &hostOut);
+    pendingHostCount_ += hostOut;
     // Carry any model samples the resampler didn't consume (transients only
     // in steady state) instead of dropping them.
     const uint32_t usedModel = modelIn;
@@ -382,37 +392,61 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   const float coeff =
       1.0f - std::exp(-1.0f / (0.010f * static_cast<float>(hostRate_)));
 
-  uint32_t i = 0;
-  const uint32_t wetAvail = std::min(frames, pendingHostCount_);
+  // Render one sample at a time, in absolute output position. What a
+  // sample sounds like depends only on outPos_, never on where a call
+  // boundary fell:
+  //   - before the fixed wet-start position: delayed dry (no wet is
+  //     rendered yet). This dry prefix is also the pipeline's headroom.
+  //   - after that: mixed wet/dry, wet strictly in order from pendingHost_.
+  //     The dry sample comes from the measured latency back, so dry and
+  //     wet stay sample-aligned: the measured latency is wet-start +
+  //     chain lag, and wet[n - wetStart] is the denoised version of
+  //     input[n - latency].
+  //   - if the wet path ever runs short mid-stream (shouldn't in steady
+  //     state): delayed dry, the same content a mix of 0 would give, so
+  //     the fallback can't introduce a chunk-dependent split. The old
+  //     tail emitted UNDELAYED dry, which differed from the mix path's
+  //     delayed dry by the full latency on every affected sample.
+  // mix_ advances only once the wet-start prefix is past (it used to freeze
+  // during the old whole-block gate), so the wet onset still gets its
+  // ~10 ms crossfade; mid-stream starved samples keep advancing it, so
+  // re-entry stays click-free. It also snaps to target once within float
+  // epsilon, so steady-state output is exactly wet (or exactly dry)
+  // instead of carrying a ~1e-6 dry leak forever.
   const uint32_t dsize = static_cast<uint32_t>(dryDelay_.size());
-  for (; i < wetAvail; ++i) {
-    mix_ += (target - mix_) * coeff;
+  uint32_t wetIdx = 0;
+  for (uint32_t i = 0; i < frames; ++i) {
     // Dry sample from D ago: input written at (write - frames + i), minus D.
     const uint32_t didx =
         (dryDelayWrite_ + 2 * dsize - frames + i - dryDelayLen_) % dsize;
     const float dry = dryDelay_[didx];
-    const float wet = pendingHost_[i];
     float outSample;
-    const float mixed = dry * (1.0f - mix_) + wet * mix_;
-    if (deltaMonitor_) {
-      /* Delta monitor: output what was removed (dry - wet). */
-      outSample = (dry - mixed) * outTrim_;
+    if (outPos_ < wetStart_) {
+      outSample = dry * outTrim_;
     } else {
-      outSample = mixed * outTrim_;
+      mix_ += (target - mix_) * coeff;
+      if (std::fabs(target - mix_) < 1e-6f)
+        mix_ = target;
+      if (wetIdx < pendingHostCount_) {
+        const float wet = pendingHost_[wetIdx++];
+        const float mixed = dry * (1.0f - mix_) + wet * mix_;
+        if (deltaMonitor_) {
+          /* Delta monitor: output what was removed (dry - wet). */
+          outSample = (dry - mixed) * outTrim_;
+        } else {
+          outSample = mixed * outTrim_;
+        }
+      } else {
+        outSample = dry * outTrim_;
+      }
     }
     out[i] = outSample;
+    ++outPos_;
   }
-  if (wetAvail < pendingHostCount_) {
-    std::memmove(pendingHost_, pendingHost_ + wetAvail,
-                 (pendingHostCount_ - wetAvail) * sizeof(float));
-  }
-  pendingHostCount_ -= wetAvail;
-
-  // Tail (transients only): not enough wet samples this block -> dry.
-  // mix_ keeps tracking target so re-entry is click-free.
-  for (; i < frames; ++i) {
-    mix_ += (target - mix_) * coeff;
-    out[i] = sig[i] * outTrim_;
+  if (wetIdx > 0) {
+    std::memmove(pendingHost_, pendingHost_ + wetIdx,
+                 (pendingHostCount_ - wetIdx) * sizeof(float));
+    pendingHostCount_ -= wetIdx;
   }
 }
 
