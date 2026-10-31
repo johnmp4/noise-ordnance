@@ -16,7 +16,7 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 Dual-mono: stereo is two independent engines, one per channel. Each channel runs, in order:
 
 1. **Hum notch filter** — cascaded biquads at 50 or 60 Hz plus the first four harmonics. Old-school DSP, runs before everything else. Toggleable.
-2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, switchable from the Model dropdown: DeepFilterNet3 (default) and DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use). DeepFilterNet2 is not offered: both DF2 models abort the host process at load time under libDF's tract backend (see BRANCH-NOTES.md).
+2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use). DeepFilterNet2 is not offered: both DF2 models abort the host process at load time under libDF's tract backend (see BRANCH-NOTES.md).
 3. **Post-filter** — DeepFilterNet's perceptual cleanup stage, after the model. The Post Filter Beta knob (0–0.05, default 0.02; 0 = off) sets its strength.
 4. **Attenuation limit** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output: it is the DF-native equivalent of the old attenuation floors, but one global number instead of per-band values. This is the knob that keeps the "metallic" edge out.
 5. **Wet/dry mix** — the Reduction knob, with smoothed transitions so automation doesn't zip.
@@ -25,7 +25,7 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 
 | # | Knob | Range | Default | Notes |
 |---|------|-------|---------|-------|
-| 0 | Model | DeepFilterNet3 / DeepFilterNet3 Low Latency | DeepFilterNet3 | Dropdown (LV2 enumeration); switching reloads the model and updates reported latency |
+| 0 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency |
 | 1 | Reduction | 0–100 % | 100 % | Wet/dry mix |
 | 2 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
 | 3 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact |
@@ -62,7 +62,7 @@ make                                      # LV2 + VST3 bundles land in third_par
 bash build-test-install.sh                # full build + regression tests + install prompt
 ```
 
-The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). DeepFilterNet2 is not loadable under this pin or under v0.5.6 (tract cannot lower DF2's graph — see BRANCH-NOTES.md), which is why the dropdown offers only the DF3 models. Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs.
+The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). DeepFilterNet2 is not loadable under this pin or under v0.5.6 (tract cannot lower DF2's graph — see BRANCH-NOTES.md), which is why only the DF3 models are offered (Low Latency Model switch: off = DF3, on = DF3 Low Latency). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs.
 
 **Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests.
 
