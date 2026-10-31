@@ -71,6 +71,10 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "  profile: minimal (rustc/cargo/std), downloads a few hundred MB"
     export CARGO_HOME="$RUST_DIR/cargo" RUSTUP_HOME="$RUST_DIR/rustup"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+    # The installer does not touch PATH (--no-modify-path), so add the
+    # project-local bin dir explicitly -- otherwise the check below
+    # fails even though the toolchain just installed successfully.
+    export PATH="$RUST_DIR/cargo/bin:$PATH"
   fi
 fi
 if ! command -v cargo >/dev/null 2>&1; then
