@@ -79,6 +79,27 @@ public:
   bool setModel(int index);
   int modelIndex() const { return modelIndex_; }
 
+  // Silence gate (CPU saver, Oct 31, 2026): a DF frame whose RMS sits
+  // below kSilentGateRms is not worth a full inference -- the model
+  // outputs ~zero on such frames anyway (verified: the silence unit
+  // test, and the impulse probe that gave no measurable output). But
+  // gating must not truncate speech tails: the model's output lags its
+  // input by a few frames (lookahead + STFT), so the first
+  // kSilentGateDelayFrames silent frames are still processed normally
+  // (their outputs carry the tail), and only subsequent silent frames
+  // are skipped (zeros pushed, so output timing never shifts). A
+  // non-silent frame resets the count and resumes inference at once.
+  // The gate decision depends only on frame content, never on host
+  // block size, so block invariance is unaffected. Savings depend on
+  // the material: large for speech with pauses or idle inputs, ~zero
+  // for continuous noise (whose RMS never drops below the threshold).
+  static constexpr float kSilentGateRms = 0.001f;  // -60 dBFS RMS
+  static constexpr uint32_t kSilentGateDelayFrames = 8;  // 80 ms @48k
+
+  // Frames skipped by the silence gate (test observability; the gate
+  // is content-driven, so a test asserting it engaged needs a count).
+  uint64_t gatedFrames() const { return gatedFrames_; }
+
   void process(const float* in, float* out, uint32_t frames);
 
   uint32_t latencySamples() const;
@@ -99,6 +120,13 @@ private:
   static void debugLog(const char* fmt, ...);
   bool loadModelFile(const std::string& path);
   void clearPipeline();
+  // Run one DF frame from the input ring to the output ring, applying
+  // the silence gate and the bypass-settled skip (see process()).
+  // Callers must guarantee inRing_->available() >= frameLen_ and
+  // dfState_ != nullptr. Shared by the synchronous path (audio thread)
+  // and, later, the worker thread -- never both at once (the worker
+  // runs only when the plugin enables async mode; tests use sync).
+  void processDfFrame();
 
   double hostRate_ = 48000.0;
   float reduction_ = 1.0f;
@@ -147,6 +175,11 @@ private:
   uint32_t frameLen_ = 0;
   std::vector<float> frameBuf_;
   std::vector<float> frameOutBuf_;
+  // Silence-gate state (see the constants above): consecutive silent
+  // frames seen, and frames actually skipped. Reset in clearPipeline
+  // (fresh stream); the gate decision itself lives in processDfFrame.
+  uint32_t silentFrames_ = 0;
+  uint64_t gatedFrames_ = 0;
   SpeexResamplerState* resIn_ = nullptr;
   SpeexResamplerState* resOut_ = nullptr;
   RingBuffer* inRing_ = nullptr;

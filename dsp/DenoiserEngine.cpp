@@ -147,6 +147,8 @@ void DenoiserEngine::clearPipeline() {
   streamPos_ = 0;
   pendingModelCount_ = 0;
   pendingHostCount_ = 0;
+  silentFrames_ = 0;
+  gatedFrames_ = 0;
   std::fill(frameBuf_.begin(), frameBuf_.end(), 0.0f);
   std::fill(frameOutBuf_.begin(), frameOutBuf_.end(), 0.0f);
   std::memset(inScratch_, 0, sizeof(inScratch_));
@@ -219,6 +221,54 @@ bool DenoiserEngine::setModel(int index) {
   dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
   clearPipeline();
   return true;
+}
+
+// One DF frame: pop a frame from the input ring, run it (or skip it),
+// push exactly one frame's worth of output to the output ring -- or
+// nothing, in the bypass-settled case, where the render loop falls back
+// to delayed dry anyway and the wet stream is unused.
+//   Bypass-settled skip: when bypass is on, the mix has settled at 0,
+// and Delta Monitor is off, the wet output is multiplied by zero, so
+// running inference is pure waste. Skipped only in that exact state:
+// during the 10 ms mix ramp (either direction) inference still runs,
+// and with Delta Monitor on it still runs (bypass + delta must output
+// silence, and the starvation fallback would output dry instead --
+// wrong). The pop already happened, so no input backlog accumulates
+// and un-bypassing resumes on current audio, not a burst of stale
+// frames. The wet stream restarts cleanly because the render loop
+// consumes pending wet in order and the model's delay is unchanged
+// by the gap (its delay is lookahead + STFT, not wall-clock time).
+//   Silence gate: see the constants in the header. Gated frames push
+// zeros (not nothing) so the wet stream's frame count -- and hence
+// wet/dry alignment -- never shifts.
+void DenoiserEngine::processDfFrame() {
+  const uint32_t popped = inRing_->pop(frameBuf_.data(), frameLen_);
+  if (popped != frameLen_)
+    return;  // caller guarantees availability; be safe, not sorry
+  if (bypassed_ && mix_ == 0.0f && !deltaMonitor_) {
+    // Wet unused: skip inference entirely (no output pushed; the
+    // render loop's starvation fallback supplies delayed dry, which
+    // is exactly the bypass output).
+    return;
+  }
+  double sumSq = 0.0;
+  for (uint32_t i = 0; i < frameLen_; ++i) {
+    const double x = frameBuf_[i];
+    sumSq += x * x;
+  }
+  const float rms = static_cast<float>(std::sqrt(sumSq / frameLen_));
+  if (rms < kSilentGateRms && silentFrames_ >= kSilentGateDelayFrames) {
+    std::fill(frameOutBuf_.begin(), frameOutBuf_.end(), 0.0f);
+    outRing_->push(frameOutBuf_.data(), frameLen_);
+    ++gatedFrames_;
+    return;
+  }
+  df_process_frame(dfState_, frameBuf_.data(), frameOutBuf_.data());
+  outRing_->push(frameOutBuf_.data(), frameLen_);
+  if (rms < kSilentGateRms)
+    ++silentFrames_;
+  else
+    silentFrames_ = 0;
 }
 
 void DenoiserEngine::setPostFilterBeta(float beta) {
@@ -359,19 +409,15 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   if (modelLen > 0)
     inRing_->push(wetScratch_, modelLen);
 
-  // Run whole DF frames. DeepFilterNet takes float audio at +-1.0
-  // (unlike RNNoise's int16-scale operating point) -- no scaling here.
-  // The DF state buffers lookahead internally, so output frames emerge
-  // delayed by the model's latency; that delay is what the measured
-  // latency table accounts for.
+  // Run whole DF frames (processDfFrame: the silence gate and the
+  // bypass-settled skip live there). DeepFilterNet takes float audio
+  // at +-1.0 (unlike RNNoise's int16-scale operating point) -- no
+  // scaling here. The DF state buffers lookahead internally, so
+  // output frames emerge delayed by the model's latency; that delay
+  // is what the measured latency table accounts for.
   if (dfState_ != nullptr && frameLen_ > 0) {
-    while (inRing_->available() >= frameLen_) {
-      const uint32_t popped = inRing_->pop(frameBuf_.data(), frameLen_);
-      if (popped != frameLen_)
-        break;
-      df_process_frame(dfState_, frameBuf_.data(), frameOutBuf_.data());
-      outRing_->push(frameOutBuf_.data(), frameLen_);
-    }
+    while (inRing_->available() >= frameLen_)
+      processDfFrame();
   }
 
   // Stage model-rate wet samples for the output resampler, up to scratch

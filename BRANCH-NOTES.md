@@ -377,3 +377,50 @@ is timing only (-7% / -5% above), within drill resolution. Lesson
 kept: always compare identical harness args (hum on/off bit), and
 never quote a -240 dB floor as a reduction -- it is all-zero
 windows hitting the meter bottom, not a gain figure.
+
+### 2. Silence gating + bypass-settled skip (engine, `processDfFrame`)
+
+Two ways inference is skipped when its output is unused or
+inaudible. Both live in `processDfFrame()` (factored out of
+`process()` so the worker in improvement 3 reuses it), both keep
+the wet stream's frame count and timing intact, and neither changes
+any parameter, the TTL, or reported latency.
+
+- Silence gate: a DF frame whose RMS is below -60 dBFS
+  (`kSilentGateRms` = 0.001) is not worth a full inference -- the
+  model outputs ~zero on such frames anyway. But the model's output
+  lags its input by a few frames (lookahead + STFT), so the first
+  8 silent frames (`kSilentGateDelayFrames`, 80 ms) are still
+  processed normally -- their outputs carry the speech tail -- and
+  only subsequent silent frames are skipped, pushing zeros so
+  wet/dry alignment never shifts. A non-silent frame resets the
+  count and resumes at once. The decision depends only on frame
+  content, never on host block size, so block invariance is
+  unaffected (verified by the suite). Savings depend on material:
+  large for speech with pauses or idle inputs, ~zero for continuous
+  noise. `gatedFrames()` exposes the skip count for tests.
+- Bypass-settled skip: when bypass is on, the mix has settled at
+  exactly 0, and Delta Monitor is off, the wet output is multiplied
+  by zero -- inference is pure waste, so it is skipped (nothing
+  pushed; the render loop's starvation fallback supplies delayed
+  dry, which IS the bypass output). Skipped only in that exact
+  state: during the 10 ms mix ramp (either direction) inference
+  still runs, and with Delta Monitor on it still runs (bypass +
+  delta must output silence, and the fallback would output dry
+  instead -- wrong). The pop already happened, so no input backlog
+  accumulates and un-bypassing resumes on current audio.
+
+Tests: new `tests/unit/test-silence-gate.cpp` (real speech from the
+clean drill, 2 s speech + 2 s silence + same speech, block 512):
+tail preserved (last 80 ms of speech output is real signal),
+deep silence silent, speech resumes, gatedFrames() > 100 for the
+2 s silence, and a continuous hiss+speech control never gates.
+Existing tests unchanged in behavior: the silence test still
+passes (gated zeros are zeros), the bypass test still passes
+(fallback dry equals delayed dry), block invariance still passes
+(gate decisions are content-driven). Drill effect, measured:
+the hum drill's floor metric flips to -240 dB (meter bottom)
+because post-notch pause frames now go to exact zeros instead of
+DF's tiny residual (branch-vs-current hum diff: max 83 LSB, diff
+RMS -78 dBFS -- inaudible); hiss/combo/quiet numbers otherwise
+unchanged, gates still pass.
