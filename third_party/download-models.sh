@@ -30,8 +30,12 @@ OUT="$ROOT/third_party/models"
 mkdir -p "$OUT"
 
 # name, expected size in bytes
+# NOTE: DeepFilterNet2 is intentionally NOT listed here — DF2 crashes
+# the host at load under libDF/tract (see BRANCH-NOTES.md), so there
+# is no reason to download its model. (A leftover bare-size entry for
+# it once made this script 404 on a nonsense filename and abort
+# before fetching the real models; do not re-add it.)
 MODELS=(
-  "8628375"
   "DeepFilterNet3_onnx.tar.gz 7983136"
   "DeepFilterNet3_ll_onnx.tar.gz 36359660"
 )
