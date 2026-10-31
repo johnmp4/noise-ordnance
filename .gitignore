@@ -20,6 +20,9 @@ third_party/deepfilternet/
 # Downloaded model files (restored via third_party/download-models.sh).
 # Models are large binaries and never belong in git.
 third_party/models/
+# Project-local Rust toolchain (installed by install-third-party.sh).
+# Never belongs in git either.
+third_party/rust/
 # Keep the install/build/download scripts:
 !third_party/install-third-party.sh
 !third_party/build-libdf.sh
