@@ -37,7 +37,7 @@ until Jay has played with the knobs and decided.
 
 | # | Knob | Range | Default |
 |---|------|-------|---------|
-| 0 | Model | DeepFilterNet3 / DeepFilterNet3 Low Latency | DeepFilterNet3 |
+| 0 | Low Latency Model | off / on | off (DeepFilterNet3) |
 | 1 | Reduction | 0–100 % | 100 % |
 | 2 | Input Trim | −12 to +12 dB | 0 dB |
 | 3 | Output Trim | −12 to +12 dB | 0 dB |
@@ -48,10 +48,15 @@ until Jay has played with the knobs and decided.
 | 8 | Attenuation Limit | 0–100 dB | 100 dB (100 = no limit; lower = less suppression) |
 | 9 | Delta Monitor | on/off | off |
 
-The Model param is a DPF enumeration parameter, so hosts render a
-dropdown (LV2 scale points), not a plain integer stepper. The
-parameter contract test (`tests/param-contract.py`) pins the scale
-points in the generated TTL.
+The Low Latency Model param is a DPF boolean, so hosts render a
+labeled toggle, not an enum: OFF = DeepFilterNet3 (post-production,
+default), ON = DeepFilterNet3 Low Latency (no lookahead). It was an
+enumeration originally, but with only two loadable models the enum
+showed up in at least one host as an unlabeled binary switch -- the
+toggle names what it does. The parameter contract test
+(`tests/param-contract.py`) pins `lv2:toggled` on the low_latency port
+in the generated TTL. If a third loadable model ever appears, this
+switch must become an enumeration again.
 
 Model switching reloads synchronously on param change (load time was
 explicitly not a concern for this branch). On switch, the engine
@@ -81,7 +86,7 @@ Only the DF3 family loads via libDF/tract. The DF2 model files are
 identical across libDF revisions (same git blobs), so this is a
 tract-lowering limitation on DF2's graph, not a corrupt download.
 Until tract can lower DF2's Reshape (or libDF gains a non-tract
-backend), DF2 stays out of the dropdown. The branch default is
+backend), DF2 stays out. The branch default is
 therefore DeepFilterNet3.
 
 A note on the "DF2 baseline": the Oct 30 deep-filter listening run
@@ -159,7 +164,7 @@ denoises. The smoke test fails a bundle missing any tarball.
 bash tests/run_drills.sh            # audio drills (gated hiss + hum, report-only combo + quiet)
 bash tests/run-unit-tests.sh        # engine unit tests (silence, impulse, samplerate, bypass, block invariance)
 bash tests/lv2-smoke-test.sh        # LV2 bundle structure + models + discoverability
-python3 tests/param-contract.py     # 10 params vs README table + Model scale points (TTL or source)
+python3 tests/param-contract.py     # 10 params vs README table + Low Latency switch toggle pin (TTL or source)
 bash tests/test-harness-settings.sh # denoise_wav honors model/pfbeta/atten args
 bash tests/check-pumping.sh         # pumping check (report-only by design)
 bash tests/latency-by-model.sh      # per-model impulse latencies (see above)
@@ -204,6 +209,17 @@ check was skipped, not failed).
 
 Parameter contract: all 10 parameters match, TTL mode and source
 mode, including the Model enum scale-point pin.
+
+Re-validation, Oct 31, 2026 (Low Latency Model switch change): the
+Model enumeration became a boolean switch (OFF = DeepFilterNet3,
+ON = DeepFilterNet3 Low Latency, default off). `validate-build.sh`
+ALL GREEN again on the build VM: drills identical to the run above
+(hiss +53.4/−0.2, hum +76.5/−0.8, combo +58.7/−0.8), unit tests 5/5,
+latency script both models exact, param contract 10/10 in TTL mode
+with the new `lv2:toggled` pin on the `low_latency` port (TTL shows
+name "Low Latency Model", default 0, `lv2:portProperty lv2:toggled`,
+no enumeration). Engine behavior is unchanged by the switch: only
+the plugin parameter changed (plus comments).
 
 Harness settings: default vs tuned (pfbeta 0.05, atten 50) differ and
 the tuned run still passes the hiss gates; model 1 vs default differ
