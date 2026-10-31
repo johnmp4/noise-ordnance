@@ -13,8 +13,10 @@
 #
 # SpeexDSP is expected from the system (pkg-config speexdsp).
 #   Ubuntu/Debian: sudo apt install libspeexdsp-dev
-# A Rust toolchain is expected for the libDF build (rustup):
-#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# A Rust toolchain is required for the libDF build. If cargo is not
+# already available, this script installs it via rustup below
+# (user-local, ~/.cargo; no sudo) and sources it for the rest of
+# the run, so a fresh clone goes straight to a working build.
 #
 # Usage: bash third_party/install-third-party.sh
 # Run from the project root.
@@ -39,6 +41,35 @@ TP="$ROOT/third_party"
 DF_PIN="d375b2d8309e0935d165700c91da9de862a99c31"
 
 echo "=== Noise Ordnance: installing third-party dependencies ==="
+
+# --- Rust toolchain (required for the libDF build) ---
+# Auto-install only when cargo is genuinely absent: check PATH first,
+# then rustup's usual location, so an existing toolchain (system or
+# rustup) is never disturbed. The installer appends cargo env sourcing
+# to your shell profile; we source it here too so this run can use
+# cargo immediately. The post-install check below catches a failed
+# download (curl | sh without pipefail can otherwise look successful)
+# and aborts before anything else is fetched.
+if ! command -v cargo >/dev/null 2>&1; then
+  if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
+    echo "--- cargo found at $HOME/.cargo/bin, adding to PATH ---"
+    export PATH="$HOME/.cargo/bin:$PATH"
+  else
+    echo "--- cargo not found: installing Rust via rustup ---"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    # shellcheck disable=SC1091
+    if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
+      source "${CARGO_HOME:-$HOME/.cargo}/env"
+    else
+      export PATH="$HOME/.cargo/bin:$PATH"
+    fi
+  fi
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "FAIL: cargo still not available after rustup install attempt."
+  echo "  Install Rust manually: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+  exit 1
+fi
 
 # --- DeepFilterNet ---
 if [ -d "$TP/deepfilternet/.git" ]; then
