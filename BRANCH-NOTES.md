@@ -288,3 +288,92 @@ the pumping step can find it (it previously skipped).
   missing file), but it means a silent "it loads but does nothing"
   failure mode exists. The smoke test and the unit-test/drill
   model checks exist to catch it before it reaches a host.
+
+## Performance work (Oct 31, 2026) -- three improvements, one commit each
+
+Jay's host numbers (Ardour, 48 kHz, mono): buffer 128 -> periodic
+xruns on DF3, DF3_ll unusable; buffer 512 -> both sound good, DF3
+25-29% CPU, DF3_ll ~50%. Target: 128-sample blocks for
+recording/streaming (not live monitoring -- the model's 97/117 ms
+total latency rules that out regardless of buffer; see below).
+
+### Leftovers audit: what is RNNoise-era shell vs DF-native?
+
+The heavy CPU is the DF graph itself, not RNNoise leftovers. Audited
+Oct 31, 2026:
+
+- DF-native, not tunable without a new model: the 480-sample frame
+  (10 ms at 48 kHz, from `df_get_frame_length` -- the ONNX graph's
+  STFT hop), the per-frame compute (DF3 8 MB of weights, DF3_ll
+  36 MB -- hence LL costing MORE despite the "low latency" name;
+  the name means less lookahead, 97 vs 117 ms total, not less CPU),
+  and the algorithmic delay (chain lag 1520 DF3 / 560 DF3_ll).
+  The C API exposes no frame-size, thread-count, or optimization
+  knob (`df_create` takes path/attenuation/log-level only; libDF's
+  rayon use is the training dataloader, not inference).
+- Shell (ours, inherited from the RNNoise engine architecture, but
+  re-justified for DF): `wetStart` 4096 (85 ms) -- a LATENCY cost,
+  not a CPU cost; it must exceed the chain lookahead (~2000 worst
+  case), and the 2x margin could be trimmed later to cut total
+  latency, but that needs a block-invariance + latency re-measure
+  and does nothing for CPU. Ring sizes (16384) and scratch (8192)
+  are memory, not CPU. Mix smoothing, trims, hum notches (off by
+  default), delta monitor: trivial CPU.
+- Shell cost that IS real but small: the Speex quality-5 resamplers
+  run even at 48 kHz, where they are 1:1 -- and they do NOT pass
+  through (verified Oct 31 with a test program: an impulse becomes
+  a sinc spread over +-40 samples, 0.94 main lobe, unity gain on
+  steady signals). So at 48 kHz they cost two filter passes per
+  block plus their delay (inside the measured latency table). A
+  bypass-at-48k is a genuine fourth lever, but it changes the
+  latency table and needs a re-measure, so it was left out of this
+  round -- ask for it if the three below are not enough.
+- The structural problem: inference runs synchronously on the audio
+  thread (shell design). A 480-sample frame's inference costs more
+  than a 128-sample block's 2.7 ms deadline, so 128 xruns even
+  though average CPU is only ~25%. That is what improvement 3 fixes.
+- Total-latency framing (do not lose this): buffer latency is 2.7 ms
+  at 128 vs 10.7 ms at 512, but total latency is 97 ms (DF3_ll) /
+  117 ms (DF3). Fixing 128 saves ~8 ms of ~105 ms. The winnable
+  live case is non-monitored paths (stream/broadcast, record while
+  monitoring dry), where xruns -- not latency -- are the enemy.
+
+### 1. Native CPU flags for the libDF build
+
+`third_party/build-libdf.sh` now exports
+`RUSTFLAGS="-C target-cpu=native"` unless a non-empty RUSTFLAGS is
+already set (a distributor wanting a portable binary overrides with
+e.g. `-C target-cpu=x86-64`). Tempered expectation: tract's matmul
+kernels already select AVX2/FMA at runtime (verified in tract-linalg
+0.21.4 source via `is_x86_feature_detected`), so this helps the
+surrounding scalar code only -- a few percent, measured below, not
+a fix for the 128 deadline. The flag rebuilds libDF on the next
+install run (cargo fingerprint change, one-time cost); Jay's machine
+gets native-for-his-CPU automatically.
+
+Measured on the build VM (denoise_wav, combo drill, block 512, wall
+time for 45.9 s of audio, including model load + file I/O):
+before (plain --release): DF3 5.19 s, DF3_ll 10.40 s;
+after (native flags): DF3 4.81 s (-7%), DF3_ll 9.92 s (-5%).
+Small, as expected -- kept anyway (see the divergence note below).
+
+Correction (same day, before pushing): the "divergence" first reported
+here was a measurement error, not a native-flags effect -- owned
+plainly. The old combo file compared against was a run_drills output
+(hum filter ON, 60 Hz notches), while the new file was a manual run
+with hum OFF. Removing a -40 dB hum tone changes 95% of samples;
+that, not tract numerics, was the 95% / corr-0.94 difference. The
+clean comparison (same args both sides) shows: current engine +
+native lib is BIT-IDENTICAL to branch engine + native lib on the
+combo (hum off), and combo with hum on is bit-identical across
+blocks 128/512/1024. The hiss drill is unchanged by the native build
+(+53.4 / -0.2 before and after), and the hum drill's floor metric
+flipping to -240 dB is the silence gate (improvement 2), not the
+native build: after the notch removes the hum, pause frames are
+near-silent, the gate pushes exact zeros where the old engine kept
+DF's tiny residual (branch-vs-current hum diff: max 83 LSB, diff
+RMS -78 dBFS -- inaudible). So the native build's measured effect
+is timing only (-7% / -5% above), within drill resolution. Lesson
+kept: always compare identical harness args (hum on/off bit), and
+never quote a -240 dB floor as a reduction -- it is all-zero
+windows hitting the meter bottom, not a gain figure.

@@ -63,6 +63,17 @@ fi
 
 echo "=== Noise Ordnance: building libDF (staticlib, capi feature) ==="
 echo "    source: $DF (pinned commit in install-third-party.sh)"
+# Native CPU codegen for the tract kernels and libDF's own code. This
+# produces a machine-specific binary (fine for own-machine builds, which
+# is what this script is for; a distributor wanting a portable binary
+# should override RUSTFLAGS, e.g. RUSTFLAGS='-C target-cpu=x86-64').
+# Tempered expectation, measured Oct 31, 2026: tract's matmul kernels
+# already select AVX2/FMA at runtime (verified in tract-linalg 0.21.4
+# source: is_x86_feature_detected), so this mostly helps the
+# surrounding scalar code -- a few percent, not a fix for the 128-sample
+# deadline problem (that is what the worker-thread engine change is
+# for). A pre-set non-empty RUSTFLAGS is respected as-is.
+export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 (
   cd "$DF"
   CARGO_TARGET_DIR="$DF/target" \
