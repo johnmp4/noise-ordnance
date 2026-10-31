@@ -4,10 +4,14 @@
 # Noise Ordnance — build libDF (DeepFilterNet's Rust core) as a static
 # library for the C++ plugin to link against.
 #
-# Prerequisite: a Rust toolchain. Install via rustup (https://rustup.rs):
-#   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# then make sure cargo is on PATH (rustup's installer usually does this
-# via ~/.cargo/env). No Rust code lives in this repo: the plugin calls
+# Prerequisite: a Rust toolchain. install-third-party.sh provides
+# one: it uses an existing cargo if available, else installs a
+# project-local rustup toolchain under third_party/rust/ (no shell
+# profile changes). If you run this script directly, the same
+# resolution applies below: PATH, then an existing rustup home, then
+# the project-local toolchain (which needs CARGO_HOME/RUSTUP_HOME
+# pointed at it, or the rustup cargo proxy cannot find its
+# toolchain). No Rust code lives in this repo: the plugin calls
 # libDF through the plain C API declared in dsp/df.h.
 #
 # What gets built: third_party/deepfilternet/libDF with the `capi`
@@ -37,13 +41,22 @@ if [[ ! -d "$DF/libDF" ]]; then
   exit 1
 fi
 
+# Cargo resolution (mirrors install-third-party.sh): prefer an existing
+# toolchain (PATH, then an existing rustup home), else the
+# project-local toolchain under third_party/rust/. When the
+# project-local toolchain is used, CARGO_HOME/RUSTUP_HOME must point
+# at it, or the rustup cargo proxy cannot find its toolchain.
 if ! command -v cargo >/dev/null 2>&1; then
-  # rustup's usual location, in case PATH wasn't updated in this shell.
-  if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
-    export PATH="$HOME/.cargo/bin:$PATH"
+  if [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]]; then
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  elif [[ -x "$ROOT/third_party/rust/cargo/bin/cargo" ]]; then
+    export PATH="$ROOT/third_party/rust/cargo/bin:$PATH"
+    export CARGO_HOME="$ROOT/third_party/rust/cargo"
+    export RUSTUP_HOME="$ROOT/third_party/rust/rustup"
   else
-    echo "FAIL: cargo not found. Install Rust via rustup: https://rustup.rs"
-    echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+    echo "FAIL: cargo not found. Run third_party/install-third-party.sh"
+    echo "  (it installs a project-local Rust toolchain) or install Rust"
+    echo "  via rustup: https://rustup.rs and make sure cargo is on PATH."
     exit 1
   fi
 fi
