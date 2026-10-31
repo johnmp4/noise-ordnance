@@ -15,9 +15,11 @@
 # that whole bug class, and the value comparison catches drifted ranges
 # or defaults.
 #
-# Model dropdown pin (TTL mode only): the "model" port must be a DPF
-# enumeration (lv2:enumeration + scale points for both models), not
-# a plain integer stepper -- that is what makes hosts render a dropdown.
+# Low Latency switch pin (TTL mode only): the "low_latency" port must be
+# a DPF boolean (lv2:toggled), not an enumeration -- that is what makes
+# hosts render a labeled toggle. With only two loadable models, a toggle
+# (OFF = DeepFilterNet3, ON = DeepFilterNet3 Low Latency) is clearer
+# than an enum that may show up as an unlabeled binary switch.
 # The check runs on the raw TTL text whenever TTL mode is used.
 import re
 import sys
@@ -26,7 +28,7 @@ from pathlib import Path
 # symbol -> (name, minimum, maximum, default). From the README table,
 # verified against NoiseOrdnance.cpp initParameter.
 EXPECTED = {
-    "model": ("Model", 0, 1, 0),
+    "low_latency": ("Low Latency Model", 0, 1, 0),
     "reduction": ("Reduction", 0, 100, 100),
     "input_trim": ("Input Trim", -12, 12, 0),
     "output_trim": ("Output Trim", -12, 12, 0),
@@ -36,12 +38,6 @@ EXPECTED = {
     "post_filter_beta": ("Post Filter Beta", 0, 0.05, 0.02),
     "atten_lim": ("Attenuation Limit", 0, 100, 100),
     "delta_monitor": ("Delta Monitor", 0, 1, 0),
-}
-
-# Model scale points the TTL must carry for the dropdown (value -> label).
-MODEL_SCALE_POINTS = {
-    "DeepFilterNet3",
-    "DeepFilterNet3 Low Latency",
 }
 
 
@@ -130,28 +126,24 @@ def main(argv):
 
     print(f"--- param-contract: checking against {mode}")
     failures = []
-    # Model dropdown pin: in TTL mode the model port must carry
-    # lv2:enumeration and both scale-point labels. (Source mode has
-    # no TTL text, so it cannot check this; the TTL run in validate-build
-    # is the pin.)
+    # Low Latency switch pin: in TTL mode the low_latency port must carry
+    # lv2:toggled (DPF boolean) and must NOT carry lv2:enumeration.
+    # The region from the low_latency port's symbol to the next port's
+    # symbol is exactly the low_latency port (DPF writes ports as one
+    # Turtle list, so a bracket regex cannot delimit them: the
+    # scalePoint entries are nested brackets and later ports omit the
+    # `lv2:port` prefix).
     if ttl_text is not None:
-        # Model dropdown pin: the model port must carry lv2:enumeration
-        # and both scale-point labels. The region from the model port's
-        # symbol to the next port's symbol is exactly the model port
-        # (DPF writes ports as one Turtle list, so a bracket regex
-        # cannot delimit them: the scalePoint entries are nested
-        # brackets and later ports omit the `lv2:port` prefix).
-        m = re.search(r'lv2:symbol "model"', ttl_text)
+        m = re.search(r'lv2:symbol "low_latency"', ttl_text)
         if m is None:
-            failures.append("model port missing from TTL")
+            failures.append("low_latency port missing from TTL")
         else:
             nxt = re.search(r'lv2:symbol "', ttl_text[m.end():])
             region = ttl_text[m.start():m.end() + nxt.start()] if nxt else ttl_text[m.start():]
-            if "lv2:enumeration" not in region:
-                failures.append("model port lacks lv2:enumeration (hosts would show a stepper, not a dropdown)")
-            for label in MODEL_SCALE_POINTS:
-                if f'"{label}"' not in region:
-                    failures.append(f'model port missing scale point "{label}"')
+            if "lv2:toggled" not in region:
+                failures.append("low_latency port lacks lv2:toggled (hosts would not show a toggle)")
+            if "lv2:enumeration" in region:
+                failures.append("low_latency port still carries lv2:enumeration (stale enum)")
     for symbol, (name, lo, hi, default) in sorted(EXPECTED.items()):
         if symbol not in found:
             failures.append(f"missing parameter: {symbol}")
