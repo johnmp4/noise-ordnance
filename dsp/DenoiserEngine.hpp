@@ -33,7 +33,9 @@ class RingBuffer;
 class DenoiserEngine {
 public:
   // Model selection: index into the model file table (see .cpp).
-  // Order matches the plugin's Model enumeration parameter.
+  // The plugin exposes this as a boolean Low Latency Model switch
+  // (OFF = kModelDF3, ON = kModelDF3LL); the harness and unit tests
+  // address models by index directly.
   // NOTE: DeepFilterNet2 is deliberately NOT offered. Both DF2 models
   // (full and _ll) panic inside tract's reshape lowering at load time
   // (df_create aborts the host process) under libDF 0.5.6/tract 0.19.16
