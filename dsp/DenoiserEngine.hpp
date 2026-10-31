@@ -55,9 +55,21 @@ private:
   float mix_ = 0.0f;
   float mixTarget_ = 1.0f;
   bool bypassed_ = false;
-  bool primed_ = false;
-  bool outPrimed_ = false;  // wet output starts only after 2 frames buffered
-  static constexpr uint32_t kPrimeFrames = 2;
+  // Absolute output position: what decides wet vs dry is the sample
+  // index, never a call boundary. Samples before the fixed wet-start
+  // position are delayed dry (no wet is rendered yet); after that,
+  // mixed. This is what makes output independent of the host's block
+  // size.
+  uint32_t outPos_ = 0;
+  // Fixed absolute output position where wet rendering begins. This is
+  // set once in init() from the pre-calibration latency guess and NEVER
+  // changed by calibrateDryDelay(): the measured latency is gate + chain
+  // lag, so if the gate moved to the measured value after calibration,
+  // the peak would shift by the chain lag again and the reported latency
+  // would never match the observed peak. A fixed gate keeps calibration
+  // and use consistent, and the dry delay (measured latency) keeps dry
+  // and wet sample-aligned in the mix.
+  uint32_t wetStart_ = 0;
   // Dry-path delay line (compensates wet-path latency so dry/wet mix aligns)
   std::vector<float> dryDelay_;
   uint32_t dryDelayLen_ = 0;
