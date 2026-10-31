@@ -12,7 +12,7 @@
 #      speech cross-correlation (exact; needs denoise_wav from step 2).
 #   5. tests/lv2-smoke-test.sh -- LV2 bundle structure + discoverability.
 #   6. tests/param-contract.py -- 10 parameters vs the README table, from
-#      the freshly generated TTL, plus the Model enum scale-point pin.
+#      the freshly generated TTL, plus the Low Latency switch toggle pin.
 #   7. tests/test-harness-settings.sh -- denoise_wav model/pfbeta/atten args.
 #   8. tests/check-pumping.sh -- window-RMS variance on processed quiet
 #      (report-only by design; see that script for why it has no gate).
