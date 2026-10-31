@@ -3,8 +3,12 @@
 
 #pragma once
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -100,6 +104,27 @@ public:
   // is content-driven, so a test asserting it engaged needs a count).
   uint64_t gatedFrames() const { return gatedFrames_; }
 
+  // Async inference (worker thread, Oct 31, 2026): the fix for the
+  // 128-sample deadline problem. DF inference for one 480-sample frame
+  // costs more than a 128-sample block's 2.7 ms budget, so running it
+  // on the audio thread xruns periodically even though average CPU is
+  // only ~25%. The worker runs the same frames in the same order; the
+  // audio thread only resamples, shuffles rings, and renders. This
+  // adds NO reported latency: the worker's time budget is the existing
+  // wetStart slack (4096 samples = 85 ms at 48 kHz) -- a frame's input
+  // arrives ~117 ms before its render position, so the worker has to
+  // keep up on average, not per block. If it ever falls behind, the
+  // render loop falls back to delayed dry (a brief un-denoised
+  // moment), never a dropout or a crash. start/stop are NOT
+  // thread-safe against each other; in practice the host serializes
+  // activate/deactivate/setModel/reset/destruction.
+  void startWorker();
+  void stopWorker();
+  // Test/diagnostic use only, never the audio thread: block until the
+  // worker has consumed every input frame (or the timeout elapses).
+  bool waitWorkerIdle(int timeoutMs = 5000);
+  uint64_t workerFrames() const { return workerFrames_.load(); }  // frames handled by the worker (including gate-skipped ones)
+
   void process(const float* in, float* out, uint32_t frames);
 
   uint32_t latencySamples() const;
@@ -123,9 +148,9 @@ private:
   // Run one DF frame from the input ring to the output ring, applying
   // the silence gate and the bypass-settled skip (see process()).
   // Callers must guarantee inRing_->available() >= frameLen_ and
-  // dfState_ != nullptr. Shared by the synchronous path (audio thread)
-  // and, later, the worker thread -- never both at once (the worker
-  // runs only when the plugin enables async mode; tests use sync).
+  // dfState_ != nullptr. Runs on the audio thread in sync mode and on
+  // the worker thread in async mode -- never both at once (the worker
+  // runs only while the plugin has started it; tests use sync).
   void processDfFrame();
 
   double hostRate_ = 48000.0;
@@ -178,8 +203,27 @@ private:
   // Silence-gate state (see the constants above): consecutive silent
   // frames seen, and frames actually skipped. Reset in clearPipeline
   // (fresh stream); the gate decision itself lives in processDfFrame.
+  // Owned by whichever thread runs DF (audio in sync mode, worker in
+  // async mode -- never both, since mode switches stop the worker).
   uint32_t silentFrames_ = 0;
   uint64_t gatedFrames_ = 0;
+  // Worker thread state. dfState_ is touched only by the worker while
+  // it runs, so the df_set_* setters defer through atomics when the
+  // worker is up (applied at the top of the worker loop) and apply
+  // directly when it is down (sync mode, activate-time re-apply).
+  // bypassed_/mix_/deltaMonitor_ are plain floats read by the worker
+  // for the skip decision; a stale read costs at most one frame's
+  // skip/no-skip, inaudible under the 10 ms mix ramp.
+  std::thread worker_;
+  std::mutex workerMutex_;
+  std::condition_variable workerCv_;
+  std::atomic<bool> workerRunning_{false};
+  std::atomic<float> pendingBeta_{0.02f};
+  std::atomic<float> pendingAtten_{100.0f};
+  std::atomic<bool> betaDirty_{false};
+  std::atomic<bool> attenDirty_{false};
+  std::atomic<uint64_t> workerFrames_{0};
+  void workerMain();
   SpeexResamplerState* resIn_ = nullptr;
   SpeexResamplerState* resOut_ = nullptr;
   RingBuffer* inRing_ = nullptr;

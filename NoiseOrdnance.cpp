@@ -237,6 +237,20 @@ public:
     engineL.setDeltaMonitor(params[9] > 0.5f);
     engineR.setDeltaMonitor(params[9] > 0.5f);
     setLatency(engineL.latencySamples());
+    // Async inference: from here on, DF frames run on a worker thread
+    // per channel, and the audio thread only resamples, shuffles
+    // rings, and renders. This is what makes 128-sample blocks viable:
+    // a frame's inference no longer has to fit a 2.7 ms audio deadline.
+    // It adds no latency (the worker's budget is the existing wetStart
+    // slack) and changes no reported latency. Tests and the offline
+    // harness never start the worker, so they keep the synchronous path.
+    engineL.startWorker();
+    engineR.startWorker();
+  }
+
+  void deactivate() override {
+    engineL.stopWorker();
+    engineR.stopWorker();
   }
 
   void run(const float** inputs, float** outputs, uint32_t frames) override {

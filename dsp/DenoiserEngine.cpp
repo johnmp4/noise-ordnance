@@ -6,6 +6,7 @@
 #include "RingBuffer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -84,6 +85,8 @@ const char* DenoiserEngine::modelDisplayName(int index) {
 DenoiserEngine::DenoiserEngine() = default;
 
 DenoiserEngine::~DenoiserEngine() {
+  // Stop the worker FIRST: it touches the rings and dfState_ below.
+  stopWorker();
   delete inRing_;
   delete outRing_;
 
@@ -160,6 +163,9 @@ void DenoiserEngine::clearPipeline() {
 }
 
 bool DenoiserEngine::init(double hostSampleRate, const std::string& modelDir, int modelIndex) {
+  // The worker (if running) touches the rings rebuilt below; stop it.
+  // Callers that want async (the plugin) restart it after init.
+  stopWorker();
   hostRate_ = hostSampleRate > 0.0 ? hostSampleRate : 48000.0;
   modelDir_ = modelDir;
   if (modelIndex >= 0 && modelIndex < kModelCount)
@@ -197,10 +203,15 @@ bool DenoiserEngine::init(double hostSampleRate, const std::string& modelDir, in
 void DenoiserEngine::reset() {
   // Reload the current model to clear the DF state's internal history
   // (STFT + lookahead buffers), then clear the pipeline. A failed reload
-  // keeps the previous state (see loadModelFile).
+  // keeps the previous state (see loadModelFile). The worker stops
+  // across the reload (it touches dfState_) and restarts if it was up.
+  const bool wasRunning = workerRunning_.load();
+  stopWorker();
   if (initialized_ && !modelDir_.empty())
     loadModelFile(modelDir_ + "/" + modelFileName(modelIndex_));
   clearPipeline();
+  if (wasRunning)
+    startWorker();
 }
 
 bool DenoiserEngine::setModel(int index) {
@@ -214,12 +225,22 @@ bool DenoiserEngine::setModel(int index) {
   }
   if (modelDir_.empty())
     return false;
-  if (!loadModelFile(modelDir_ + "/" + modelFileName(index)))
+  // The worker touches dfState_: stop it across the load, and restart
+  // it if it was up -- including on load failure, where the previous
+  // state is preserved (see loadModelFile).
+  const bool wasRunning = workerRunning_.load();
+  stopWorker();
+  if (!loadModelFile(modelDir_ + "/" + modelFileName(index))) {
+    if (wasRunning)
+      startWorker();
     return false;  // keeps the current model
+  }
   modelIndex_ = index;
   latency48k_ = kModelLatency48k[index];
   dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
   clearPipeline();
+  if (wasRunning)
+    startWorker();
   return true;
 }
 
@@ -273,12 +294,25 @@ void DenoiserEngine::processDfFrame() {
 
 void DenoiserEngine::setPostFilterBeta(float beta) {
   postFilterBeta_ = beta;
+  if (workerRunning_.load()) {
+    // The worker owns dfState_ while it runs: defer, never touch it
+    // from here (a setter from automation must never race inference).
+    // The worker applies pending values at the top of its loop.
+    pendingBeta_.store(beta);
+    betaDirty_.store(true);
+    return;
+  }
   if (dfState_ != nullptr)
     df_set_post_filter_beta(dfState_, beta);
 }
 
 void DenoiserEngine::setAttenLim(float db) {
   attenLimDb_ = db;
+  if (workerRunning_.load()) {
+    pendingAtten_.store(db);
+    attenDirty_.store(true);
+    return;
+  }
   if (dfState_ != nullptr)
     df_set_atten_lim(dfState_, db);
 }
@@ -406,6 +440,11 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   if (modelLen > kScratchSamples)
     modelLen = kScratchSamples;
   speex_resampler_process_float(resIn_, 0, inScratch_, &inLen, wetScratch_, &modelLen);
+  // A failed push (async mode only, worker stalled long enough to fill
+  // the 16384-sample input ring) drops this block's model samples:
+  // the DF stream gets a gap, and the render loop covers it with
+  // delayed dry. Degraded, never corrupt. In sync mode the ring is a
+  // bounded sawtooth (0..frameLen_) and the push cannot fail.
   if (modelLen > 0)
     inRing_->push(wetScratch_, modelLen);
 
@@ -415,7 +454,13 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   // scaling here. The DF state buffers lookahead internally, so
   // output frames emerge delayed by the model's latency; that delay
   // is what the measured latency table accounts for.
-  if (dfState_ != nullptr && frameLen_ > 0) {
+  // In async mode the worker owns DF execution: the audio thread only
+  // wakes it (new input is in the ring above). The worker also wakes
+  // on a 5 ms timeout backstop, so a missed notify delays a frame
+  // instead of stalling it.
+  if (workerRunning_.load()) {
+    workerCv_.notify_one();
+  } else if (dfState_ != nullptr && frameLen_ > 0) {
     while (inRing_->available() >= frameLen_)
       processDfFrame();
   }
@@ -432,6 +477,9 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
       outRing_->pop(pendingModel_ + pendingModelCount_, take);
       pendingModelCount_ += take;
     }
+    // Popping freed output-ring room the worker may be waiting on.
+    if (workerRunning_.load())
+      workerCv_.notify_one();
   }
 
   // Eager resample top-up: run the output resampler whenever there are
@@ -510,4 +558,80 @@ uint32_t DenoiserEngine::latencySamples() const {
   // plugin's output. The impulse unit test verifies the reported value
   // against the observed wet-path peak on every run.
   return dryDelayLen_;
+}
+
+// --- Worker thread (async inference) ---
+
+void DenoiserEngine::startWorker() {
+  // Idempotent test-and-set: a second start while running is a no-op.
+  // The worker idles (5 ms timeout loop) when no model is loaded; a
+  // later setModel restarts it, so a late model load still engages it.
+  if (workerRunning_.exchange(true))
+    return;
+  worker_ = std::thread([this] { workerMain(); });
+}
+
+void DenoiserEngine::stopWorker() {
+  if (!workerRunning_.exchange(false))
+    return;
+  workerCv_.notify_all();
+  if (worker_.joinable())
+    worker_.join();
+}
+
+bool DenoiserEngine::waitWorkerIdle(int timeoutMs) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (true) {
+    // "Idle" means no COMPLETE frame remains for the worker, not an
+    // empty ring: the audio thread pushes ~512 samples per block
+    // while the worker consumes 480-sample frames, so a partial-frame
+    // leftover (< frameLen_) is normal and must not block. (An early
+    // version of this waited for available() == 0 and timed out on
+    // nearly every block -- 5 s each -- because the leftover almost
+    // never hits exactly zero.)
+    if (inRing_ == nullptr || frameLen_ == 0 ||
+        inRing_->available() < frameLen_)
+      return true;
+    if (std::chrono::steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+void DenoiserEngine::workerMain() {
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lk(workerMutex_);
+      // Wait for a runnable frame (input frame available AND output
+      // room available), for shutdown, or for the 5 ms backstop. The
+      // backstop covers a missed notify: worst case a frame waits an
+      // extra 5 ms, far inside the ~117 ms wetStart slack.
+      workerCv_.wait_for(lk, std::chrono::milliseconds(5), [&] {
+        return !workerRunning_.load() ||
+               (dfState_ != nullptr && frameLen_ > 0 && inRing_ != nullptr &&
+                outRing_ != nullptr && inRing_->available() >= frameLen_ &&
+                outRing_->availableSpace() >= frameLen_);
+      });
+      if (!workerRunning_.load())
+        break;
+      // Apply deferred DF params (see setPostFilterBeta/setAttenLim).
+      // The mutex is held here, but only for these cheap calls.
+      if (betaDirty_.exchange(false) && dfState_ != nullptr)
+        df_set_post_filter_beta(dfState_, pendingBeta_.load());
+      if (attenDirty_.exchange(false) && dfState_ != nullptr)
+        df_set_atten_lim(dfState_, pendingAtten_.load());
+      if (dfState_ == nullptr || frameLen_ == 0 || inRing_ == nullptr ||
+          outRing_ == nullptr || inRing_->available() < frameLen_ ||
+          outRing_->availableSpace() < frameLen_)
+        continue;  // spurious wakeup or a race with the audio thread
+    }  // release the mutex BEFORE inference -- never hold it across
+       // df_process_frame (that would serialize the worker with any
+       // setter waiting on the same mutex, and the point of the worker
+       // is to run inference off every other thread's path).
+    processDfFrame();
+    ++workerFrames_;
+    // No notify back: the audio thread never sleeps on the worker; it
+    // polls outRing every block.
+  }
 }

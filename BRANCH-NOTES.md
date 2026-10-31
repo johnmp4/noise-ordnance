@@ -424,3 +424,75 @@ because post-notch pause frames now go to exact zeros instead of
 DF's tiny residual (branch-vs-current hum diff: max 83 LSB, diff
 RMS -78 dBFS -- inaudible); hiss/combo/quiet numbers otherwise
 unchanged, gates still pass.
+
+### 3. Worker-thread async inference (the 128 fix)
+
+The structural fix. DF inference for one 480-sample frame costs
+more than a 128-sample block's 2.7 ms deadline, so synchronous
+inference xruns at 128 even at ~25% average CPU. Now the audio
+thread never runs inference: each channel gets a worker thread
+that runs the same frames in the same order (via `processDfFrame`,
+shared with the sync path), while the audio thread only resamples,
+shuffles rings, and renders. This adds NO reported latency and no
+parameter/TTL change: the worker's time budget is the existing
+`wetStart` slack (4096 samples = 85 ms at 48 kHz) -- a frame's input
+arrives ~117 ms before its render position, so the worker must keep
+up on average, not per block. If it ever falls behind, the render
+loop falls back to delayed dry (a brief un-denoised moment), never
+a dropout or a crash. If the worker stalls long enough to fill the
+16384-sample input ring, that block's model samples are dropped
+(same graceful fallback, documented at the push site).
+
+Mechanics, for the next person touching this:
+
+- Rings are SPSC lock-free (`dsp/RingBuffer.hpp`: atomic size_,
+  producer-owned write_, consumer-owned read_). Audio produces
+  input / consumes output; the worker consumes input / produces
+  output. `reset()` is NOT thread-safe and is only called with
+  the worker stopped (init / setModel / reset all stop it first).
+- The worker waits on a condition variable for (input frame
+  available AND output room available), with a 5 ms timeout
+  backstop so a missed notify delays a frame instead of stalling
+  it. The audio thread notifies after pushing input and after
+  popping output (room freed); it never sleeps on the worker.
+- `dfState_` is worker-owned while the worker runs, so the
+  post-filter/attenuation setters defer through atomics when the
+  worker is up (applied at the top of the worker loop) and apply
+  directly when it is down (sync mode, activate-time re-apply).
+  `setModel`/`reset` stop the worker across the load and restart
+  it if it was up (including on load failure, where the previous
+  state is preserved). The plugin starts the worker in
+  `activate()` (after init + param re-apply) and stops it in
+  `deactivate()`; the engine destructor stops it as a backstop.
+  start/stop are not thread-safe against each other -- in practice
+  the host serializes activate/deactivate/setModel/reset.
+- Tests and the offline harness never start the worker, so they
+  keep the synchronous path and all existing tests are unchanged
+  in behavior. New `tests/unit/test-async.cpp` proves the async
+  path is the same path: same input (3 s speech + 1 s trailing
+  silence, block 512) through a worker engine (drain-waited after
+  every block) and a sync engine must be BIT-IDENTICAL, with
+  workerFrames() > 0 proving the worker actually ran.
+
+Validation (full `validate-build.sh`, Oct 31, after all three):
+ALL GREEN -- drills 4/0 (hiss +53.4/-0.2, hum floor meter-bottom
+via the gate, combo +58.7/-0.8 report-only, quiet meter-bottom),
+unit tests 7/7 (async bit-identical to sync over 192000 samples,
+worker handled 400 frames; silence-gate tail/deep/resume/control
+all as specified; block invariance, bypass, latency, samplerate,
+silence all pass), latency script both models exact (5616/4656),
+param contract 10/10, LV2 smoke OK. The async test caught one real
+bug before this run: `waitWorkerIdle` first waited for an EMPTY
+input ring, but the audio thread pushes ~512 samples per block
+while the worker consumes 480-sample frames, so a partial-frame
+leftover (< 480) is normal and the wait timed out on nearly every
+block. Idle now means "no complete frame remains"
+(available() < frameLen_), and the test fails fast on a real stall
+instead of burning a timeout per block.
+What this does NOT prove: real-time behavior at 128 on Jay's
+machine (this VM has no real-time host measurement). The 128
+verdict needs his Ardour run: if xruns are gone at 128 on both
+models, the deadline problem is solved; if DF3_ll still xruns,
+its per-frame cost exceeds even the worker's average-throughput
+budget on his machine, and the remaining levers are the 48k
+resampler bypass (above) or a smaller model (none available).
