@@ -3,11 +3,12 @@
 # SPDX-License-Identifier: MIT
 # Noise Ordnance — quick debug build for testing changes/fixes/new features.
 #
-# Assumes third_party/ is already installed and patched (run
-# third_party/install-third-party.sh first if not).
+# Assumes third_party/ is already installed (DPF + libDF + model files --
+# run third_party/install-third-party.sh first if not).
 #
 # Builds with DEBUG=true (debug logging enabled, -g -O0), installs
 # LV2 + VST3 bundles to ~/.lv2 and ~/.vst3 without prompting.
+# No tests: debug.sh is for quick testing only.
 #
 # Usage: bash debug.sh  (from the project root)
 
@@ -24,6 +25,13 @@ if [ ! -x third_party/dpf/utils/lv2_ttl_generator ]; then
   cc third_party/dpf/utils/lv2-ttl-generator/lv2_ttl_generator.c -o third_party/dpf/utils/lv2_ttl_generator -ldl
 fi
 bash third_party/dpf/utils/generate-ttl.sh third_party/bin
+
+# Bundles must carry the model tarballs (see validate-build.sh): the
+# plugin looks in <bundle>/models/ when $NOISE_ORDNANCE_MODEL_DIR is
+# unset, and an installed bundle without models runs dry.
+mkdir -p "$ROOT/third_party/bin/NoiseOrdnance.lv2/models" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models"
+cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.lv2/models/"
+cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models/"
 
 echo "=== Noise Ordnance: installing debug bundles ==="
 mkdir -p "$HOME/.lv2" "$HOME/.vst3"

@@ -15,11 +15,15 @@ tests/drills/*.wav
 !tests/drills/paint-drying-clean.wav
 
 # Cloned third-party sources (restored via third_party/install-third-party.sh)
-third_party/rnnoise/
 third_party/dpf/
-# Keep the patches and install script:
-!third_party/*.patch
+third_party/deepfilternet/
+# Downloaded model files (restored via third_party/download-models.sh).
+# Models are large binaries and never belong in git.
+third_party/models/
+# Keep the install/build/download scripts:
 !third_party/install-third-party.sh
+!third_party/build-libdf.sh
+!third_party/download-models.sh
 !third_party/README.md
 
 # Editor / IDE

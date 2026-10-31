@@ -11,6 +11,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <sys/stat.h>
 
 void DenoiserEngine::debugLog(const char* fmt, ...) {
   (void)fmt;
@@ -25,6 +26,60 @@ void DenoiserEngine::debugLog(const char* fmt, ...) {
 #endif
 }
 
+namespace {
+
+// Model files (in the model directory) and dropdown labels, indexed by
+// DenoiserEngine::kModelDF3 / kModelDF3LL. The plugin's Model
+// enumeration parameter uses the same order. DeepFilterNet2 is not
+// here: it does not load (see DenoiserEngine.hpp).
+const char* kModelFiles[DenoiserEngine::kModelCount] = {
+    "DeepFilterNet3_onnx.tar.gz",
+    "DeepFilterNet3_ll_onnx.tar.gz",
+};
+const char* kModelNames[DenoiserEngine::kModelCount] = {
+    "DeepFilterNet3",
+    "DeepFilterNet3 Low Latency",
+};
+
+// Measured wet-path latency at 48 kHz, per model, via cross-correlation
+// (tests/check-latency.py): the clean drill speech is run through the
+// engine at 100% wet and a mid-file segment of input vs output is
+// correlated; the peak lag is the number below. An impulse probe does
+// NOT work reliably for DF: the model gates near-silent frames, so a
+// lone impulse in silence gives no measurable output under libDF 0.5.6
+// (and only a marginal 1.6e-4 peak under main). latencySamples() scales these by hostRate/48000; the
+// samplerate unit test verifies the scaling holds within 10% at
+// 44.1/96 kHz.
+// Re-measure if the model files change: run tests/check-latency.py
+// and put the measured numbers here. Do NOT guess these numbers.
+//   DeepFilterNet3: 5616 = wetStart 4096 + chain lag 1520 (model STFT +
+//     lookahead + resamplers). At 48 kHz that is 117 ms total.
+//   DeepFilterNet3 Low Latency: 4656 = 4096 + 560 (97 ms total).
+// DeepFilterNet2 is not in this table: it does not load (see
+// DenoiserEngine.hpp), so it has no meaningful latency here.
+const uint32_t kModelLatency48k[DenoiserEngine::kModelCount] = {
+    5616,  // DeepFilterNet3 -- measured by correlation, see BRANCH-NOTES.md
+    4656,  // DeepFilterNet3 Low Latency -- measured by correlation
+};
+
+bool fileExists(const std::string& path) {
+  struct stat st;
+  return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+}  // namespace
+
+const char* DenoiserEngine::modelFileName(int index) {
+  if (index < 0 || index >= kModelCount)
+    return kModelFiles[kModelDF3];
+  return kModelFiles[index];
+}
+
+const char* DenoiserEngine::modelDisplayName(int index) {
+  if (index < 0 || index >= kModelCount)
+    return kModelNames[kModelDF3];
+  return kModelNames[index];
+}
 
 DenoiserEngine::DenoiserEngine() = default;
 
@@ -40,91 +95,41 @@ DenoiserEngine::~DenoiserEngine() {
     speex_resampler_destroy(resOut_);
     resOut_ = nullptr;
   }
-  if (rnnoise_ != nullptr) {
-    rnnoise_destroy(rnnoise_);
-    rnnoise_ = nullptr;
+  if (dfState_ != nullptr) {
+    df_free(dfState_);
+    dfState_ = nullptr;
   }
 }
 
-// Measures the wet-path latency by sending an impulse through at 100% wet
-// and finding the output peak. The model suppresses the impulse (it's not
-// speech-like) but the peak remains detectable as the global maximum in the
-// search window. Runs at init time; ~1.5 s of audio at 44x realtime.
-void DenoiserEngine::calibrateDryDelay() {
-  const uint32_t rate = static_cast<uint32_t>(hostRate_);
-  const uint32_t settle = rate;          // 1 s of zeros (mix/pipeline settle)
-  const uint32_t tail = rate / 2;        // 0.5 s tail to catch the peak
-  const uint32_t total = settle + 1 + tail;
-  std::vector<float> in(total, 0.0f), out(total, 0.0f);
-  in[settle] = 1.0f;
-
-  const float savedReduction = reduction_;
-  setReduction(1.0f);  // 100% wet: we measure the wet path only
-  for (uint32_t d = 0; d < total;) {
-    uint32_t n = std::min<uint32_t>(128, total - d);
-    process(in.data() + d, out.data() + d, n);
-    d += n;
+// Load a model file into dfState_. The file MUST exist: df_create panics
+// (aborts) on a bad path, so a stat check happens before every call.
+// On failure the previous state is preserved (or stays null on first
+// load) and false is returned. On success the current post-filter beta
+// and attenuation limit are applied (df_create starts with the
+// post-filter off).
+bool DenoiserEngine::loadModelFile(const std::string& path) {
+  if (!fileExists(path))
+    return false;
+  DFState* next = df_create(path.c_str(), attenLimDb_, nullptr);
+  if (next == nullptr)
+    return false;
+  const size_t fl = df_get_frame_length(next);
+  if (fl == 0 || fl > 4096) {
+    df_free(next);
+    return false;
   }
-
-  float peak = 0.0f;
-  uint32_t at = 0;
-  for (uint32_t i = settle + 64; i < total; ++i) {
-    const float a = std::fabs(out[i]);
-    if (a > peak) { peak = a; at = i; }
-  }
-  if (at > settle && peak > 1e-4f) {
-    dryDelayLen_ = at - settle;
-  }
-  // else: keep the initial guess.
-  setReduction(savedReduction);
+  if (dfState_ != nullptr)
+    df_free(dfState_);
+  dfState_ = next;
+  df_set_post_filter_beta(dfState_, postFilterBeta_);
+  df_set_atten_lim(dfState_, attenLimDb_);
+  frameLen_ = static_cast<uint32_t>(fl);
+  frameBuf_.assign(frameLen_, 0.0f);
+  frameOutBuf_.assign(frameLen_, 0.0f);
+  return true;
 }
 
-void DenoiserEngine::init(double hostSampleRate) {
-  hostRate_ = hostSampleRate > 0.0 ? hostSampleRate : 48000.0;
-  rebuildHumFilters();  // coefficients depend on host rate
-
-  delete inRing_;
-  delete outRing_;
-
-  inRing_ = new RingBuffer(16384);
-  outRing_ = new RingBuffer(16384);
-
-  if (resIn_ != nullptr)
-    speex_resampler_destroy(resIn_);
-  if (resOut_ != nullptr)
-    speex_resampler_destroy(resOut_);
-
-  int err = 0;
-  resIn_ = speex_resampler_init(1, static_cast<spx_uint32_t>(hostRate_), kModelRate, 5, &err);
-  resOut_ = speex_resampler_init(1, kModelRate, static_cast<spx_uint32_t>(hostRate_), 5, &err);
-
-  if (rnnoise_ != nullptr)
-    rnnoise_destroy(rnnoise_);
-  rnnoise_ = rnnoise_create(nullptr);
-  setSmoothing(smoothing_);
-  rnnoise_set_band_floor(rnnoise_, bandFloorLowDb_, bandFloorMidDb_, bandFloorHighDb_);
-  rnnoise_set_vad_adapt(rnnoise_, vadAdapt_);
-
-  // Dry-path delay: the wet path has a fixed latency D (priming + model
-  // pipeline + resamplers). Delaying the dry signal by D keeps dry/wet
-  // sample-aligned in the mix -- without it, middle mix positions produce
-  // a D-sample echo (comb filtering). Start with a guess so the mix code has
-  // a valid buffer, then measure the true D below.
-  dryDelayLen_ = static_cast<uint32_t>(std::round(1456.0 * hostRate_ / 48000.0));
-  dryDelay_.assign(dryDelayLen_ + 8192, 0.0f);
-  dryDelayWrite_ = 0;
-
-  reset();
-
-  // Measure the true wet-path latency with an impulse probe, then size the
-  // dry delay to match and clear the probe from the pipeline.
-  calibrateDryDelay();
-  dryDelay_.assign(dryDelayLen_ + 8192, 0.0f);
-  dryDelayWrite_ = 0;
-  reset();
-}
-
-void DenoiserEngine::reset() {
+void DenoiserEngine::clearPipeline() {
   if (inRing_ != nullptr)
     inRing_->reset();
   if (outRing_ != nullptr)
@@ -134,60 +139,98 @@ void DenoiserEngine::reset() {
     speex_resampler_reset_mem(resIn_);
   if (resOut_ != nullptr)
     speex_resampler_reset_mem(resOut_);
-  if (rnnoise_ != nullptr)
-    rnnoise_destroy(rnnoise_);
 
-  rnnoise_ = rnnoise_create(nullptr);
-  setSmoothing(smoothing_);
-  rnnoise_set_band_floor(rnnoise_, bandFloorLowDb_, bandFloorMidDb_, bandFloorHighDb_);
-  rnnoise_set_vad_adapt(rnnoise_, vadAdapt_);
-  primed_ = false;
-  outPrimed_ = false;
-  consumePhase_ = 0.0;
+  dryDelay_.assign(dryDelayLen_ + 8192, 0.0f);
   dryDelayWrite_ = 0;
-  if (dryDelayLen_ > 0)
-    std::fill(dryDelay_.begin(), dryDelay_.end(), 0.0f);
   mix_ = 0.0f;
-
   mixTarget_ = reduction_;
-  std::memset(frameBuf_, 0, sizeof(frameBuf_));
-  std::memset(frameOutBuf_, 0, sizeof(frameOutBuf_));
+  streamPos_ = 0;
+  pendingModelCount_ = 0;
+  pendingHostCount_ = 0;
+  std::fill(frameBuf_.begin(), frameBuf_.end(), 0.0f);
+  std::fill(frameOutBuf_.begin(), frameOutBuf_.end(), 0.0f);
   std::memset(inScratch_, 0, sizeof(inScratch_));
   std::memset(wetScratch_, 0, sizeof(wetScratch_));
-  std::memset(outScratch_, 0, sizeof(outScratch_));
   std::memset(pendingModel_, 0, sizeof(pendingModel_));
   std::memset(pendingHost_, 0, sizeof(pendingHost_));
   std::memset(humS1_, 0, sizeof(humS1_));
   std::memset(humS2_, 0, sizeof(humS2_));
-  pendingModelCount_ = 0;
-  pendingHostCount_ = 0;
 }
 
-void DenoiserEngine::setSmoothing(float s) {
-  smoothing_ = s;
-  float smooth = 0.7f * s;
-  float alpha = 0.8f * s;
-  debugLog("slider=%.2f -> smooth=%.3f alpha=%.3f\n", s, smooth, alpha);
-  if (rnnoise_ != nullptr) {
-    rnnoise_set_gain_smoothing(rnnoise_, smooth);
-    rnnoise_set_alpha(rnnoise_, alpha);
+bool DenoiserEngine::init(double hostSampleRate, const std::string& modelDir, int modelIndex) {
+  hostRate_ = hostSampleRate > 0.0 ? hostSampleRate : 48000.0;
+  modelDir_ = modelDir;
+  if (modelIndex >= 0 && modelIndex < kModelCount)
+    modelIndex_ = modelIndex;
+  rebuildHumFilters();  // coefficients depend on host rate
+
+  delete inRing_;
+  delete outRing_;
+  inRing_ = new RingBuffer(16384);
+  outRing_ = new RingBuffer(16384);
+
+  if (resIn_ != nullptr)
+    speex_resampler_destroy(resIn_);
+  if (resOut_ != nullptr)
+    speex_resampler_destroy(resOut_);
+  int err = 0;
+  resIn_ = speex_resampler_init(1, static_cast<spx_uint32_t>(hostRate_), kModelRate, 5, &err);
+  resOut_ = speex_resampler_init(1, kModelRate, static_cast<spx_uint32_t>(hostRate_), 5, &err);
+
+  // Pipeline delay from the measured per-model table. This is the value
+  // latencySamples() reports, so the host's delay compensation matches
+  // the observed wet-path peak (verified by the impulse unit test).
+  latency48k_ = kModelLatency48k[modelIndex_];
+  dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
+  wetStart_ = static_cast<uint32_t>(std::round(kWetStart48k * hostRate_ / 48000.0));
+
+  bool ok = false;
+  if (!modelDir_.empty())
+    ok = loadModelFile(modelDir_ + "/" + modelFileName(modelIndex_));
+  initialized_ = true;
+  clearPipeline();
+  return ok;
+}
+
+void DenoiserEngine::reset() {
+  // Reload the current model to clear the DF state's internal history
+  // (STFT + lookahead buffers), then clear the pipeline. A failed reload
+  // keeps the previous state (see loadModelFile).
+  if (initialized_ && !modelDir_.empty())
+    loadModelFile(modelDir_ + "/" + modelFileName(modelIndex_));
+  clearPipeline();
+}
+
+bool DenoiserEngine::setModel(int index) {
+  if (index < 0 || index >= kModelCount)
+    return false;
+  if (!initialized_) {
+    // Not init()'d yet (plugin constructed but not activated): just
+    // record the selection; activate() loads it.
+    modelIndex_ = index;
+    return true;
   }
+  if (modelDir_.empty())
+    return false;
+  if (!loadModelFile(modelDir_ + "/" + modelFileName(index)))
+    return false;  // keeps the current model
+  modelIndex_ = index;
+  latency48k_ = kModelLatency48k[index];
+  dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
+  clearPipeline();
+  return true;
 }
 
-
-
-void DenoiserEngine::setBandFloor(float lowDb, float midDb, float highDb) {
-  bandFloorLowDb_ = lowDb;
-  bandFloorMidDb_ = midDb;
-  bandFloorHighDb_ = highDb;
-  if (rnnoise_ != nullptr)
-    rnnoise_set_band_floor(rnnoise_, lowDb, midDb, highDb);
+void DenoiserEngine::setPostFilterBeta(float beta) {
+  postFilterBeta_ = beta;
+  if (dfState_ != nullptr)
+    df_set_post_filter_beta(dfState_, beta);
 }
 
-void DenoiserEngine::setVadAdapt(float adapt) {
-  vadAdapt_ = adapt;
-  if (rnnoise_ != nullptr)
-    rnnoise_set_vad_adapt(rnnoise_, adapt);
+void DenoiserEngine::setAttenLim(float db) {
+  attenLimDb_ = db;
+  if (dfState_ != nullptr)
+    df_set_atten_lim(dfState_, db);
 }
 
 void DenoiserEngine::setDeltaMonitor(bool enable) {
@@ -247,12 +290,31 @@ void DenoiserEngine::rebuildHumFilters() {
 void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   if (in == nullptr || out == nullptr || frames == 0)
     return;
-  if (inRing_ == nullptr || outRing_ == nullptr || resIn_ == nullptr || resOut_ == nullptr || rnnoise_ == nullptr)
-    init(hostRate_);
+  // Very large blocks would overflow the fixed scratch buffers: split
+  // them into scratch-sized chunks (identical to the host calling with
+  // smaller blocks, which this engine is invariant to -- see the
+  // block-invariance unit test).
+  if (frames > kScratchSamples) {
+    uint32_t done = 0;
+    while (done < frames) {
+      const uint32_t n = std::min(kScratchSamples, frames - done);
+      process(in + done, out + done, n);
+      done += n;
+    }
+    return;
+  }
+  if (!initialized_) {
+    // Never init()'d (e.g. plugin constructed but not activated):
+    // true passthrough. No model load is attempted from the audio
+    // thread -- and, importantly, not during TTL generation either,
+    // which instantiates the plugin without activating it.
+    for (uint32_t i = 0; i < frames; ++i)
+      out[i] = in[i] * outTrim_;
+    return;
+  }
 
   std::fill(inScratch_, inScratch_ + kScratchSamples, 0.0f);
   std::fill(wetScratch_, wetScratch_ + kScratchSamples, 0.0f);
-  std::fill(outScratch_, outScratch_ + kScratchSamples, 0.0f);
 
   // Module 1: hum notch. Host rate, whole input, before the dry/wet split:
   // both the delay-line dry and the denoised wet are hum-free, so middle
@@ -274,8 +336,8 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     sig = humScratch_;
   }
 
-  // Feed the dry delay line every block (even while priming) so it holds
-  // real audio history by the time the wet path starts.
+  // Feed the dry delay line every block (even before wet starts) so it
+  // holds real audio history by the time the wet path starts.
   {
     const uint32_t dsize = static_cast<uint32_t>(dryDelay_.size());
     for (uint32_t i = 0; i < frames; ++i) {
@@ -288,87 +350,57 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   for (uint32_t i = 0; i < frames; ++i)
     inScratch_[i] = sig[i] * inTrim_;
 
+  // Resample host rate -> 48 kHz model rate, into the input ring.
   spx_uint32_t inLen = frames;
   spx_uint32_t modelLen = static_cast<spx_uint32_t>(std::ceil(static_cast<double>(frames) * (kModelRate / hostRate_)) + 8.0);
   if (modelLen > kScratchSamples)
     modelLen = kScratchSamples;
-
   speex_resampler_process_float(resIn_, 0, inScratch_, &inLen, wetScratch_, &modelLen);
   if (modelLen > 0)
     inRing_->push(wetScratch_, modelLen);
 
-  while (inRing_ != nullptr && inRing_->available() >= kFrameSize) {
-    const uint32_t popped = inRing_->pop(frameBuf_, kFrameSize);
-    if (popped != kFrameSize)
-      break;
-
-    // RNNoise's operating point is int16 scale (+-32768), exactly like
-    // rnnoise_demo -- NOT +-1.0. Its internal silence gate (E < 0.04) is
-    // calibrated for that scale: feeding +-1.0 floats makes quiet audio
-    // take the silence path, i.e. silent passthrough with no denoising.
-    for (uint32_t s = 0; s < kFrameSize; ++s)
-      frameBuf_[s] *= 32768.0f;
-    rnnoise_process_frame(rnnoise_, frameOutBuf_, frameBuf_);
-    for (uint32_t s = 0; s < kFrameSize; ++s)
-      frameOutBuf_[s] /= 32768.0f;
-    outRing_->push(frameOutBuf_, kFrameSize);
-    primed_ = true;
-  }
-
-  // Still priming (no denoised audio exists yet): whole block dry.
-  if (!primed_ || outRing_ == nullptr) {
-    for (uint32_t i = 0; i < frames; ++i)
-      out[i] = sig[i] * outTrim_;
-    return;
-  }
-
-  // Output priming: hold the wet path until 2 full frames are buffered.
-  // The model produces bursty 480-sample chunks while we consume a steady
-  // frames/block; without headroom the ring periodically empties, causing
-  // a 32-sample dry glitch every 4 blocks (a 93.75 Hz buzz). With 2 frames
-  // of headroom the level oscillates safely and never hits zero.
-  if (!outPrimed_) {
-    if (outRing_->available() < kPrimeFrames * kFrameSize) {
-      for (uint32_t i = 0; i < frames; ++i)
-        out[i] = sig[i] * outTrim_;
-      return;
+  // Run whole DF frames. DeepFilterNet takes float audio at +-1.0
+  // (unlike RNNoise's int16-scale operating point) -- no scaling here.
+  // The DF state buffers lookahead internally, so output frames emerge
+  // delayed by the model's latency; that delay is what the measured
+  // latency table accounts for.
+  if (dfState_ != nullptr && frameLen_ > 0) {
+    while (inRing_->available() >= frameLen_) {
+      const uint32_t popped = inRing_->pop(frameBuf_.data(), frameLen_);
+      if (popped != frameLen_)
+        break;
+      df_process_frame(dfState_, frameBuf_.data(), frameOutBuf_.data());
+      outRing_->push(frameOutBuf_.data(), frameLen_);
     }
-    outPrimed_ = true;
   }
 
-  // Model-rate samples needed to render this block. Pop EXACTLY this many:
-  // the ring absorbs the model's 480-sample chunkiness, so over-popping only
-  // discards denoised audio (the old code popped everything available and
-  // threw away whatever didn't fit this block -- starving the wet path).
-  const double modelRatio = static_cast<double>(kModelRate) / hostRate_;
-  // Fractional consumption: the model produces frames*modelRatio samples per
-  // block ON AVERAGE (e.g. 139.32 at 44.1 kHz). Ceil()'ing to 140 every block
-  // over-consumes by 0.68/block and slowly drains the ring. Accumulate the
-  // fraction so long-term consumption exactly matches production.
-  consumePhase_ += frames * modelRatio;
-  uint32_t takeModel = static_cast<uint32_t>(consumePhase_);
-  consumePhase_ -= takeModel;
-  const uint32_t availModel = static_cast<uint32_t>(outRing_->available());
-  takeModel = std::min(takeModel, availModel);
-  // Guard: never overflow the scratch buffers, even for huge blocks.
-  if (takeModel > kScratchSamples - pendingModelCount_)
-    takeModel = kScratchSamples - pendingModelCount_;
-
-  // Prepend any model samples carried from the last block, then pop fresh ones.
-  // (Dedicated pendingModel_ buffer: wetScratch_ is clobbered by the input
-  // resampler at the top of every process() call.)
-  if (takeModel > 0) {
-    outRing_->pop(pendingModel_ + pendingModelCount_, takeModel);
-    pendingModelCount_ += takeModel;
+  // Stage model-rate wet samples for the output resampler, up to scratch
+  // room. Popping into pendingModel_ (not straight into the resampler)
+  // keeps the resampler's input stream contiguous across blocks.
+  {
+    const uint32_t room = kScratchSamples - pendingModelCount_;
+    uint32_t take = static_cast<uint32_t>(outRing_->available());
+    if (take > room)
+      take = room;
+    if (take > 0) {
+      outRing_->pop(pendingModel_ + pendingModelCount_, take);
+      pendingModelCount_ += take;
+    }
   }
 
-  if (pendingModelCount_ > 0 && pendingHostCount_ == 0) {
+  // Eager resample top-up: run the output resampler whenever there are
+  // model samples waiting and host-side room, appending into
+  // pendingHost_. The buffer stays near full instead of sawtoothing to
+  // zero, so the render loop below (almost) never starves -- and when
+  // it does, the fallback is delayed dry, not undelayed dry. The
+  // resampler's output stream depends only on its input stream, not on
+  // chunking, so this stays block-size invariant.
+  if (pendingModelCount_ > 0 && pendingHostCount_ < kScratchSamples) {
     spx_uint32_t modelIn = pendingModelCount_;
-    spx_uint32_t hostOut = kScratchSamples;
-    speex_resampler_process_float(resOut_, 0, pendingModel_, &modelIn, pendingHost_, &hostOut);
-    pendingHostCount_ = hostOut;
-    // Carry any model samples the resampler didn't consume (transients only
-    // in steady state) instead of dropping them.
+    spx_uint32_t hostOut = kScratchSamples - pendingHostCount_;
+    speex_resampler_process_float(resOut_, 0, pendingModel_, &modelIn,
+                                  pendingHost_ + pendingHostCount_, &hostOut);
+    pendingHostCount_ += hostOut;
     const uint32_t usedModel = modelIn;
     if (usedModel < pendingModelCount_) {
       std::memmove(pendingModel_, pendingModel_ + usedModel,
@@ -377,47 +409,59 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     pendingModelCount_ -= usedModel;
   }
 
-  // Smoothed wet/dry mix (~10 ms time constant -- no zipper noise on moves).
+  // Single per-sample render loop, gated on absolute stream position:
+  // before wetStart_ (and whenever wet is unavailable) the output is
+  // delayed dry; from wetStart_ on, wet samples are consumed strictly
+  // in order. Because the gate is absolute, not block-relative, and
+  // consumption subtracts only what was actually popped, the output is
+  // identical for any host block size.
   const float target = bypassed_ ? 0.0f : mixTarget_;
   const float coeff =
       1.0f - std::exp(-1.0f / (0.010f * static_cast<float>(hostRate_)));
 
-  uint32_t i = 0;
-  const uint32_t wetAvail = std::min(frames, pendingHostCount_);
   const uint32_t dsize = static_cast<uint32_t>(dryDelay_.size());
-  for (; i < wetAvail; ++i) {
+  uint32_t wetUsed = 0;
+  for (uint32_t i = 0; i < frames; ++i) {
     mix_ += (target - mix_) * coeff;
-    // Dry sample from D ago: input written at (write - frames + i), minus D.
+    if (std::fabs(target - mix_) < 1e-6f)
+      mix_ = target;  // snap: no permanent ~1e-6 dry leak at steady state
+    // Dry sample from dryDelayLen_ ago: input written at
+    // (write - frames + i), minus the delay.
     const uint32_t didx =
         (dryDelayWrite_ + 2 * dsize - frames + i - dryDelayLen_) % dsize;
     const float dry = dryDelay_[didx];
-    const float wet = pendingHost_[i];
+    const uint64_t pos = streamPos_ + i;
     float outSample;
-    const float mixed = dry * (1.0f - mix_) + wet * mix_;
-    if (deltaMonitor_) {
-      /* Delta monitor: output what was removed (dry - wet). */
-      outSample = (dry - mixed) * outTrim_;
+    if (pos < wetStart_ || wetUsed >= pendingHostCount_) {
+      // Not yet wet, or starved: delayed dry (never undelayed dry --
+      // that would shift the sample by the full latency).
+      outSample = dry * outTrim_;
     } else {
-      outSample = mixed * outTrim_;
+      const float wet = pendingHost_[wetUsed++];
+      const float mixed = dry * (1.0f - mix_) + wet * mix_;
+      if (deltaMonitor_) {
+        // Delta monitor: output what was removed (dry - wet).
+        outSample = (dry - mixed) * outTrim_;
+      } else {
+        outSample = mixed * outTrim_;
+      }
     }
     out[i] = outSample;
   }
-  if (wetAvail < pendingHostCount_) {
-    std::memmove(pendingHost_, pendingHost_ + wetAvail,
-                 (pendingHostCount_ - wetAvail) * sizeof(float));
+  if (wetUsed > 0) {
+    if (wetUsed < pendingHostCount_) {
+      std::memmove(pendingHost_, pendingHost_ + wetUsed,
+                   (pendingHostCount_ - wetUsed) * sizeof(float));
+    }
+    pendingHostCount_ -= wetUsed;
   }
-  pendingHostCount_ -= wetAvail;
-
-  // Tail (transients only): not enough wet samples this block -> dry.
-  // mix_ keeps tracking target so re-entry is click-free.
-  for (; i < frames; ++i) {
-    mix_ += (target - mix_) * coeff;
-    out[i] = sig[i] * outTrim_;
-  }
+  streamPos_ += frames;
 }
 
 uint32_t DenoiserEngine::latencySamples() const {
-  // The true wet-path latency, measured at init() by calibrateDryDelay().
-  // Report it so the host can delay-compensate the plugin's output.
+  // The wet-path latency from the measured per-model table, scaled to
+  // the host rate. Report it so the host can delay-compensate the
+  // plugin's output. The impulse unit test verifies the reported value
+  // against the observed wet-path peak on every run.
   return dryDelayLen_;
 }
