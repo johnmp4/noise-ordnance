@@ -13,10 +13,11 @@
 #
 # SpeexDSP is expected from the system (pkg-config speexdsp).
 #   Ubuntu/Debian: sudo apt install libspeexdsp-dev
-# A Rust toolchain is required for the libDF build. If cargo is not
-# already available, this script installs it via rustup below
-# (user-local, ~/.cargo; no sudo) and sources it for the rest of
-# the run, so a fresh clone goes straight to a working build.
+# A Rust toolchain is required for the libDF build. Toolchain policy
+# (deliberate, contributor-facing): nothing is ever installed outside
+# this project tree. An existing cargo on PATH (or in an existing
+# rustup home) is used as-is; otherwise a project-local rustup
+# toolchain is installed under third_party/rust/ (see below).
 #
 # Usage: bash third_party/install-third-party.sh
 # Run from the project root.
@@ -43,60 +44,39 @@ DF_PIN="d375b2d8309e0935d165700c91da9de862a99c31"
 echo "=== Noise Ordnance: installing third-party dependencies ==="
 
 # --- Rust toolchain (required for the libDF build) ---
-# Auto-install only when cargo is genuinely absent: check PATH first,
-# then rustup's usual location (honouring CARGO_HOME), so an existing
-# toolchain (system, rustup, or custom location on PATH) is never
-# disturbed. Installing via rustup modifies your shell profile (it
-# appends cargo env sourcing) and downloads a few hundred MB, so it
-# never happens silently: unless --yes is passed, the script asks
-# first, defaulting to No. That also covers a Rust installed in some
-# non-standard place: answer No, put cargo on PATH, and re-run.
-# The post-install check below catches a failed download (curl | sh
-# without pipefail can otherwise look successful) and aborts before
-# anything else is fetched.
+# Toolchain policy (deliberate, contributor-facing): nothing is ever
+# installed outside this project tree. If cargo is already available
+# (PATH, or an existing rustup home), it is used as-is. Otherwise a
+# project-local rustup toolchain is installed under third_party/rust/
+# with --no-modify-path, so no shell profile is touched and nothing
+# lands in $HOME. The install is announced loudly below but needs no
+# prompt: like the DPF clone and model downloads, it only writes
+# inside this project. --profile minimal keeps it to rustc/cargo/std.
+# The post-install check catches a failed download (curl | sh without
+# pipefail can otherwise look successful) and aborts before anything
+# else is fetched.
+RUST_DIR="$TP/rust"
 if ! command -v cargo >/dev/null 2>&1; then
   if [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]]; then
     echo "--- cargo found at ${CARGO_HOME:-$HOME/.cargo}/bin, adding to PATH ---"
     export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  elif [[ -x "$RUST_DIR/cargo/bin/cargo" ]]; then
+    echo "--- cargo found at project-local $RUST_DIR/cargo/bin, adding to PATH ---"
+    export PATH="$RUST_DIR/cargo/bin:$PATH"
+    export CARGO_HOME="$RUST_DIR/cargo" RUSTUP_HOME="$RUST_DIR/rustup"
   else
-    echo "--- Rust toolchain not found ---"
-    echo "This script can install it via rustup (stable toolchain):"
-    echo "  - installs to ${CARGO_HOME:-$HOME/.cargo} (user-local, no sudo)"
-    echo "  - appends cargo env sourcing to your shell profile"
-    echo "  - downloads a few hundred MB"
-    echo "If you already have Rust installed somewhere unusual (not on"
-    echo "PATH), answer No, put cargo on PATH, and re-run this script."
-    if [[ "${1:-}" == "--yes" ]]; then
-      echo "--- (--yes given: proceeding without prompting) ---"
-    elif [[ -t 0 ]]; then
-      read -r -p "Install Rust via rustup now? [y/N] " REPLY
-      case "$REPLY" in
-        [yY]|[yY][eE][sS]) ;;
-        *)
-          echo "Aborting. Install Rust manually and re-run, or re-run with --yes:"
-          echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-          exit 1
-          ;;
-      esac
-    else
-      echo "Aborting (no terminal to prompt on). Re-run with --yes to install"
-      echo "unattended, or install Rust manually:"
-      echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
-      exit 1
-    fi
-    echo "--- installing Rust via rustup ---"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    # shellcheck disable=SC1091
-    if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
-      source "${CARGO_HOME:-$HOME/.cargo}/env"
-    else
-      export PATH="$HOME/.cargo/bin:$PATH"
-    fi
+    echo "--- Rust toolchain not found; installing project-local rustup ---"
+    echo "  location: $RUST_DIR (inside this project, gitignored)"
+    echo "  no shell profile changes, nothing installed in \$HOME"
+    echo "  profile: minimal (rustc/cargo/std), downloads a few hundred MB"
+    export CARGO_HOME="$RUST_DIR/cargo" RUSTUP_HOME="$RUST_DIR/rustup"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
   fi
 fi
 if ! command -v cargo >/dev/null 2>&1; then
   echo "FAIL: cargo still not available after rustup install attempt."
-  echo "  Install Rust manually: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+  echo "  Run third_party/install-third-party.sh again, or install Rust"
+  echo "  manually and make sure cargo is on PATH."
   exit 1
 fi
 
