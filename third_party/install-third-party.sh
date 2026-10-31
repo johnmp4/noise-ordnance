@@ -44,18 +44,47 @@ echo "=== Noise Ordnance: installing third-party dependencies ==="
 
 # --- Rust toolchain (required for the libDF build) ---
 # Auto-install only when cargo is genuinely absent: check PATH first,
-# then rustup's usual location, so an existing toolchain (system or
-# rustup) is never disturbed. The installer appends cargo env sourcing
-# to your shell profile; we source it here too so this run can use
-# cargo immediately. The post-install check below catches a failed
-# download (curl | sh without pipefail can otherwise look successful)
-# and aborts before anything else is fetched.
+# then rustup's usual location (honouring CARGO_HOME), so an existing
+# toolchain (system, rustup, or custom location on PATH) is never
+# disturbed. Installing via rustup modifies your shell profile (it
+# appends cargo env sourcing) and downloads a few hundred MB, so it
+# never happens silently: unless --yes is passed, the script asks
+# first, defaulting to No. That also covers a Rust installed in some
+# non-standard place: answer No, put cargo on PATH, and re-run.
+# The post-install check below catches a failed download (curl | sh
+# without pipefail can otherwise look successful) and aborts before
+# anything else is fetched.
 if ! command -v cargo >/dev/null 2>&1; then
-  if [[ -x "$HOME/.cargo/bin/cargo" ]]; then
-    echo "--- cargo found at $HOME/.cargo/bin, adding to PATH ---"
-    export PATH="$HOME/.cargo/bin:$PATH"
+  if [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]]; then
+    echo "--- cargo found at ${CARGO_HOME:-$HOME/.cargo}/bin, adding to PATH ---"
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
   else
-    echo "--- cargo not found: installing Rust via rustup ---"
+    echo "--- Rust toolchain not found ---"
+    echo "This script can install it via rustup (stable toolchain):"
+    echo "  - installs to ${CARGO_HOME:-$HOME/.cargo} (user-local, no sudo)"
+    echo "  - appends cargo env sourcing to your shell profile"
+    echo "  - downloads a few hundred MB"
+    echo "If you already have Rust installed somewhere unusual (not on"
+    echo "PATH), answer No, put cargo on PATH, and re-run this script."
+    if [[ "${1:-}" == "--yes" ]]; then
+      echo "--- (--yes given: proceeding without prompting) ---"
+    elif [[ -t 0 ]]; then
+      read -r -p "Install Rust via rustup now? [y/N] " REPLY
+      case "$REPLY" in
+        [yY]|[yY][eE][sS]) ;;
+        *)
+          echo "Aborting. Install Rust manually and re-run, or re-run with --yes:"
+          echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+          exit 1
+          ;;
+      esac
+    else
+      echo "Aborting (no terminal to prompt on). Re-run with --yes to install"
+      echo "unattended, or install Rust manually:"
+      echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+      exit 1
+    fi
+    echo "--- installing Rust via rustup ---"
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     # shellcheck disable=SC1091
     if [[ -f "${CARGO_HOME:-$HOME/.cargo}/env" ]]; then
