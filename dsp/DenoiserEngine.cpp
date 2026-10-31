@@ -28,9 +28,9 @@ void DenoiserEngine::debugLog(const char* fmt, ...) {
 
 namespace {
 
-// Model files (in the model directory) and dropdown labels, indexed by
-// DenoiserEngine::kModelDF3 / kModelDF3LL. The plugin's Model
-// enumeration parameter uses the same order. DeepFilterNet2 is not
+// Model files (in the model directory) and display names, indexed by
+// DenoiserEngine::kModelDF3 / kModelDF3LL. The plugin's Low Latency
+// Model switch maps OFF -> index 0, ON -> index 1. DeepFilterNet2 is not
 // here: it does not load (see DenoiserEngine.hpp).
 const char* kModelFiles[DenoiserEngine::kModelCount] = {
     "DeepFilterNet3_onnx.tar.gz",
