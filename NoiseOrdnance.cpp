@@ -9,16 +9,16 @@
 
 START_NAMESPACE_DISTRHO
 
-// Model dropdown values. Statically allocated on purpose: DPF copies the
-// Parameter (including this pointer) when initParameter returns, and the
-// copy takes deleteLater=false from here, so nobody frees this array.
-// The values must stay in the same order as DenoiserEngine::kModelDF3 /
-// kModelDF3LL and dsp/DenoiserEngine.cpp's file table. DeepFilterNet2
+// Model selection is a boolean switch, not a dropdown: with only two
+// loadable models, a toggle is clearer than an enum whose values a host
+// may render unlabeled. OFF (0) = DeepFilterNet3, the post-production
+// model (default); ON (1) = DeepFilterNet3 Low Latency (no lookahead).
+// The mapping lives here, in the plugin: the engine still takes a model
+// index (DenoiserEngine::kModelDF3 / kModelDF3LL), and the harness and
+// unit tests still address models by index directly. DeepFilterNet2
 // is not offered: it does not load (see DenoiserEngine.hpp).
-static ParameterEnumerationValue kModelValues[] = {
-    ParameterEnumerationValue(0.0f, "DeepFilterNet3"),
-    ParameterEnumerationValue(1.0f, "DeepFilterNet3 Low Latency"),
-};
+// If a third loadable model ever appears, this switch should become an
+// enumeration again -- a toggle cannot express three choices.
 
 class NoiseOrdnance : public Plugin {
 public:
@@ -40,20 +40,16 @@ public:
   void initParameter(uint32_t index, Parameter& param) override {
     switch (index) {
       case 0:
-        // Model selection: an enumeration parameter, so hosts render a
-        // dropdown (LV2 scale points) instead of an integer stepper.
-        // restrictedMode + >= 2 values is what makes the TTL generator
-        // emit lv2:portProperty lv2:enumeration.
-        param.hints = kParameterIsAutomatable | kParameterIsInteger;
-        param.name = "Model";
-        param.symbol = "model";
+        // Low Latency Model switch: OFF = DeepFilterNet3 (post-production,
+        // default), ON = DeepFilterNet3 Low Latency (no lookahead). A
+        // boolean renders as a labeled toggle in hosts instead of an
+        // enum that may show up as an unlabeled binary switch.
+        param.hints = kParameterIsAutomatable | kParameterIsBoolean;
+        param.name = "Low Latency Model";
+        param.symbol = "low_latency";
         param.ranges.def = 0.0f;
         param.ranges.min = 0.0f;
         param.ranges.max = 1.0f;
-        param.enumValues.count = 2;
-        param.enumValues.restrictedMode = true;
-        param.enumValues.values = kModelValues;
-        param.enumValues.deleteLater = false;
         break;
       case 1:
         param.hints = kParameterIsAutomatable;
@@ -152,10 +148,11 @@ public:
     switch (index) {
       case 0:
         // Synchronous model reload (test branch: load time is not a
-        // concern). Different models have different latencies, so the
+        // concern). Switch ON = low-latency model, OFF = post-production
+        // model. Different models have different latencies, so the
         // host must be told the new value.
-        if (engineL.setModel(static_cast<int>(value)))
-          engineR.setModel(static_cast<int>(value));
+        if (engineL.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3))
+          engineR.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3);
         setLatency(engineL.latencySamples());
         break;
       case 1:
@@ -218,7 +215,7 @@ public:
       if (bundle != nullptr && bundle[0] != '\0')
         modelDir = std::string(bundle) + "/models";
     }
-    const int model = static_cast<int>(params[0]);
+    const int model = params[0] > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3;
     engineL.init(getSampleRate(), modelDir, model);
     engineR.init(getSampleRate(), modelDir, model);
     // Re-apply parameters (init resets engine state; the model itself
