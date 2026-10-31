@@ -8,144 +8,123 @@
 #      don't exist yet (derive-drills.py, deterministic, seed 42). Only the
 #      clean file ships in the repo, which keeps large files out of it and
 #      lets contributors run the tests against their own clean speech.
-#   2. Builds tests/denoise_wav (offline harness around the REAL
+#   2. Builds tests/build/denoise_wav (offline harness around the REAL
 #      dsp/DenoiserEngine.cpp -- no DPF, no GUI, no audio device).
 #   3. Runs the drills through it in DAW-like blocks.
-#   4. Scores each with tests/measure.py using the same windowed-RMS method
-#      that validated the RNNoise model itself:
-#        noise floor  = mean RMS of the quietest 5% of 20 ms windows
-#        speech peaks = 99th percentile of window RMS
-#      plus an exact sample-count check (catches the dropped-sample bug
-#      class that starved the wet path in Oct 2026).
+#   4. Scores each with tests/measure.py using windowed RMS.
+# The pumping check (tests/pumping-check.py) and harness settings test
+# (tests/test-harness-settings.sh) run separately in validate-build.sh.
 #
-# Drill files live in tests/drills/ (16-bit PCM mono WAVs). Missing derived
-# files are generated, not failed; a missing clean file means the affected
-# drills SKIP.
+# Gates: hiss >= 20 dB floor reduction, peaks within 1 dB; hum >= 40 dB
+# floor reduction (the hum drill gates the reusable notch bank: the
+# 40 dB bar is set so a broken hum module fails), peaks within 1 dB.
+# Blocks 128 and 1024.
+# Combo (hiss + hum) and quiet (room tone, no speech) are report-only:
+# combo measures the full chain as a sanity figure, quiet is a no-speech
+# guard (the floor must not rise).
 #
-# IMPORTANT: do not "test" this model with synthetic tones. A pure sine is
-# tonal content, which RNNoise is designed to PRESERVE -- a tone measures
-# "no reduction" even when the model is working perfectly. Use the drills.
-# (Tones are fine for testing the hum filter in isolation, with the model
-# out of the path -- that belongs in a unit test, not here.)
-#
-# Exit code: 0 if every gated drill passes, 1 otherwise.
-
+# The DeepFilterNet core is a speech model, so drill speech is a valid
+# test signal for it. A synthetic tone is NOT: DF's gains are learned on
+# speech spectra, and a tone through it measures nothing meaningful.
+# Drills run on DeepFilterNet3 (model 0) -- the default model.
+# DF crushes the hiss floor to near-silence, so the 20 dB hiss gate
+# passes with huge margin; the gates are kept because a broken harness
+# or a missing model would still fail them (denoise_wav exits 1 when no
+# model loads, and this script does not tolerate that).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DRILLS="$ROOT/tests/drills"
-BUILD="$ROOT/tests/build"
-mkdir -p "$BUILD" "$DRILLS"
+DIR="$ROOT/tests/drills"
+OUT="$ROOT/tests/drills/out"
+mkdir -p "$OUT"
 
-echo "=== Noise Ordnance test suite ==="
-
-# --- derive noisy drills from clean audio if any are missing ---
-# Existing derived files are left alone, so contributors can substitute
-# their own clean speech: replace the clean file, delete the derived files,
-# and re-run -- derive regenerates them from the new clean file.
-DERIVED="paint-drying-hiss.wav paint-drying-hum.wav paint-drying-combo.wav paint-drying-quiet.wav"
-NEED_DERIVE=0
-for f in $DERIVED; do
-  [[ -f "$DRILLS/$f" ]] || NEED_DERIVE=1
-done
-if [[ "$NEED_DERIVE" -eq 1 ]]; then
-  if [[ -f "$DRILLS/paint-drying-clean.wav" ]]; then
-    echo "--- deriving drill files from clean audio ---"
-    python3 "$ROOT/tests/derive-drills.py" \
-      --clean "$DRILLS/paint-drying-clean.wav" --out-dir "$DRILLS" \
-      || echo "WARNING: derive failed; missing drills will SKIP"
-  else
-    echo "NOTE: clean audio missing, cannot derive drills; affected drills will SKIP"
+# --- models: required to run (a missing model must fail, not pass dry) ---
+MODEL_DIR="${NOISE_ORDNANCE_MODEL_DIR:-$ROOT/third_party/models}"
+for f in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+  if [[ ! -f "$MODEL_DIR/$f" ]]; then
+    echo "FAIL: model file missing: $MODEL_DIR/$f"
+    echo "  Run: bash third_party/download-models.sh"
+    exit 1
   fi
-fi
+done
+export NOISE_ORDNANCE_MODEL_DIR="$MODEL_DIR"
 
-# --- build the harness (same third-party setup as the plugin Makefile) ---
+# --- derive noisy variants if any are missing ---
+CLEAN="$DIR/paint-drying-clean.wav"
+if [[ ! -f "$CLEAN" ]]; then
+  echo "SKIP: clean drill file missing ($CLEAN); drills need it."
+  exit 0
+fi
+for f in paint-drying-hiss.wav paint-drying-hum.wav paint-drying-combo.wav paint-drying-quiet.wav; do
+  if [[ ! -f "$DIR/$f" ]]; then
+    echo "--- deriving drill files (deterministic, seed 42) ---"
+    python3 "$ROOT/tests/derive-drills.py" --clean "$CLEAN" --out-dir "$DIR"
+    break
+  fi
+done
+
+# --- build denoise_wav ---
+DF_LIB="$ROOT/third_party/deepfilternet/target/release/libdf.a"
+if [[ ! -f "$DF_LIB" ]]; then
+  echo "FAIL: libDF static library missing: $DF_LIB"
+  echo "  Run: bash third_party/build-libdf.sh  (or third_party/install-third-party.sh)"
+  exit 1
+fi
 SPEEXDSP_CFLAGS="$(pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/include")"
 SPEEXDSP_LIBS="$(pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")"
-
-echo "--- building denoise_wav ---"
-# The RNNoise sources are C; everything else is C++. Compile them with the
-# right compiler each (like the plugin Makefile does via DPF) -- g++ on the
-# .c files fails on void* conversions.
-CC="${CC:-cc}"
 CXX="${CXX:-g++}"
-shopt -s nullglob
-C_OBJS=()
-for src in "$ROOT"/third_party/rnnoise/src/*.c; do
-  obj="$BUILD/$(basename "$src" .c).o"
-  # shellcheck disable=SC2086
-  "$CC" -O2 \
-    -I"$ROOT/third_party/rnnoise/include" -I"$ROOT/third_party/rnnoise/src" \
-    -DFLOAT_APPROX \
-    $SPEEXDSP_CFLAGS \
-    -c "$src" -o "$obj"
-  C_OBJS+=("$obj")
-done
+echo "--- building denoise_wav ---"
+mkdir -p "$ROOT/tests/build"
 # shellcheck disable=SC2086
 "$CXX" -O2 -std=c++17 \
   -I"$ROOT" -I"$ROOT/dsp" \
-  -I"$ROOT/third_party/rnnoise/include" -I"$ROOT/third_party/rnnoise/src" \
-  -DFLOAT_APPROX \
   $SPEEXDSP_CFLAGS \
   "$ROOT/tests/denoise_wav.cpp" "$ROOT/dsp/DenoiserEngine.cpp" \
-  "${C_OBJS[@]}" \
-  -o "$BUILD/denoise_wav" -lm $SPEEXDSP_LIBS
+  -o "$ROOT/tests/build/denoise_wav" -lm $SPEEXDSP_LIBS -lpthread -ldl "$DF_LIB"
 
-PASS=0; FAIL=0; SKIP=0
+BIN="$ROOT/tests/build/denoise_wav"
+MEASURE="python3 $ROOT/tests/measure.py"
 
-# run_one <name> <file> <mode> <min_floor_db> <max_peak_db> <blocks> <hum> [note]
-#   mode: gated      -> thresholds enforced, counts as PASS/FAIL
-#         report     -> numbers printed only, with the given note
-#   hum:  0 = hum notch off; 50/60 = hum notch module on at that mains freq
-run_one() {
-  local name="$1" file="$2" mode="$3" minfloor="$4" maxpeak="$5" blocks="$6"
-  local hum="$7" note="${8:-}"
-  local wav="$DRILLS/$file"
-
-  if [[ ! -f "$wav" ]]; then
-    echo "SKIP  $name: $file not found in tests/drills/"
-    SKIP=$((SKIP + 1))
-    return
-  fi
-
-  for b in $blocks; do
-    local out="$BUILD/${name}-b${b}.wav"
-    "$BUILD/denoise_wav" "$wav" "$out" "$b" 1.0 "$hum" >/dev/null
-    echo "--- $name (block size $b, hum ${hum}) ---"
-    if [[ "$mode" == "gated" ]]; then
-      if python3 "$ROOT/tests/measure.py" "$wav" "$out" \
-          --min-floor-reduction-db "$minfloor" --max-peak-delta-db "$maxpeak"; then
-        echo "  PASS $name (block $b)"
-        PASS=$((PASS + 1))
-      else
-        echo "  FAIL $name (block $b)"
-        FAIL=$((FAIL + 1))
-      fi
+# $1 = drill base name, $2 = gates ("hiss"|"hum"|"report"), $3 = extra args
+# Detail goes to stderr; only the "pass fail" counts go to stdout, so
+# callers can capture them with: read -r p f < <(run_drill ...)
+run_drill() {
+  local name="$1" gates="$2"; shift 2
+  local src="$DIR/paint-drying-$name.wav"
+  local g_pass=0 g_fail=0
+  for block in 128 1024; do
+    local dst="$OUT/paint-drying-$name-$block.wav"
+    "$BIN" "$src" "$dst" "$block" 1.0 "$@" >/dev/null 2>"$OUT/$name-$block.log" \
+      || { echo "FAIL $name block $block: denoise_wav exited nonzero (see $OUT/$name-$block.log)" >&2; g_fail=$((g_fail+1)); continue; }
+    if [[ "$gates" == "report" ]]; then
+      echo "--- $name block $block (report-only) ---" >&2
+      $MEASURE --check-only "$src" "$dst" >&2 || true
     else
-      python3 "$ROOT/tests/measure.py" "$wav" "$out" --check-only
-      echo "  (report-only: $note)"
+      echo "--- $name block $block ---" >&2
+      if $MEASURE "$src" "$dst" --min-floor-reduction-db "${FLOOR_GATE:-20}" --max-peak-delta-db 1.0 >&2; then
+        g_pass=$((g_pass+1))
+      else
+        g_fail=$((g_fail+1))
+      fi
     fi
   done
+  echo "$g_pass $g_fail"
 }
 
-# Gated: the hiss drill is the v1 contract. Two block sizes because the
-# Oct 2026 wet-path starvation bug was block-size sensitive.
-run_one "paint-drying-hiss" "paint-drying-hiss.wav" gated 20 1.0 "128 1024" 0
+TOTAL_PASS=0; TOTAL_FAIL=0
 
-# Gated: hum module regression. Threshold 40 dB is deliberately above what
-# RNNoise alone achieves on this drill (~28 dB), so a broken/disabled hum
-# module FAILS the gate; measured 88-110 dB with the module working, so
-# 40 dB leaves wide headroom.
-run_one "paint-drying-hum" "paint-drying-hum.wav" gated 40 1.0 "128 1024" 60
+# hiss: DF model, no hum module (gates 20 dB / 1 dB)
+read -r p f < <(run_drill hiss hiss)
+TOTAL_PASS=$((TOTAL_PASS+p)); TOTAL_FAIL=$((TOTAL_FAIL+f))
 
-# Report-only guards: combo (hiss + hum) with the hum module on -- hum adds
-# ~1 dB here, so no gate; the hum drill is the hum gate. Quiet is the
-# no-speech guard: floor must not rise; listen to tests/build/paint-drying-quiet-b128.wav
-# -- it should sound steady and quiet, not swelling/breathing (pumping) or chirpy artifacts.
-run_one "paint-drying-combo" "paint-drying-combo.wav" report "" "" "128" 60 \
-  "combo (hiss + hum) with the hum module on -- hum adds ~1 dB here, so no gate; the hum drill is the hum gate"
-run_one "paint-drying-quiet" "paint-drying-quiet.wav" report "" "" "128" 0 \
-  "no-speech guard: floor must not rise; listen to tests/build/paint-drying-quiet-b128.wav -- it should sound steady and quiet, not swelling/breathing (pumping) or chirpy artifacts"
+# hum: notch module on at 60 Hz, gates 40 dB / 1 dB
+read -r p f < <(FLOOR_GATE=40 run_drill hum hum 60)
+TOTAL_PASS=$((TOTAL_PASS+p)); TOTAL_FAIL=$((TOTAL_FAIL+f))
 
-echo "=== summary: $PASS passed, $FAIL failed, $SKIP skipped ==="
-[[ "$FAIL" -eq 0 ]]
+# combo: full chain (DF + hum at 60 Hz), report-only
+read -r p f < <(run_drill combo report 60)
+# quiet: no-speech guard, report-only
+read -r p f < <(run_drill quiet report)
+
+echo "=== drills: $TOTAL_PASS passed, $TOTAL_FAIL failed ==="
+if [[ "$TOTAL_FAIL" -eq 0 ]]; then exit 0; else exit 1; fi

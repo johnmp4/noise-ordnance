@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Engine unit test: sample-rate invariance.
-// RNNoise runs at a fixed 48 kHz internally, so the engine resamples to
+// DeepFilterNet runs at a fixed 48 kHz internally, so the engine resamples to
 // and from the host rate. The same logical signal at 44.1, 48, and 96 kHz
 // must behave consistently: same output length as input, finite output,
 // output level within a generous band of the 48 kHz reference, and a
@@ -38,8 +38,17 @@ int main() {
 
   for (int k = 0; k < 3; ++k) {
     const std::vector<float> sig = resampleFrom48k(ref, rates[k]);
+    const std::string md = modelDir();
+    if (md.empty()) {
+      std::printf("FAIL samplerate: NOISE_ORDNANCE_MODEL_DIR not set (a "
+                  "missing model must not silently pass as dry audio)\n");
+      return 1;
+    }
     DenoiserEngine engine;
-    engine.init(rates[k]);
+    if (!engine.init(rates[k], md, modelIndex()) || !engine.modelLoaded()) {
+      std::printf("FAIL samplerate: model did not load from %s\n", md.c_str());
+      return 1;
+    }
     std::vector<float> out;
     runEngine(engine, sig, out, 512);
     results[k].rate = rates[k];

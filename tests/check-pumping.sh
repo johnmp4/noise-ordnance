@@ -4,16 +4,16 @@
 # Pumping check runner (REPORT-ONLY, deliberately ungated).
 # Runs tests/pumping-check.py over the processed quiet drill and prints
 # the window-RMS variance numbers. It does NOT fail the build on them:
-# the current engine measures std 3.30 dB over all windows, but that
-# number is dominated by a single fully-silent window (which reads
-# -240 dB on the meter's epsilon floor), while the non-silent windows
-# measure std 0.80 dB -- so no single threshold cleanly captures
-# "pumping" yet. The gate threshold is an open question for the owner:
-# it needs a listening check (does the processed quiet actually breathe?)
-# plus a metric refinement (e.g. percentile-based, or silent-window
-# aware) before it can gate anything. Until then, this reports and
-# exits 0; it only fails on infrastructure errors (missing input that
-# cannot be derived, or a processing failure).
+# no single threshold cleanly captures "pumping" yet (the RNNoise-era
+# numbers in the old comment -- std 3.30 dB over all windows, 0.80 dB
+# over non-silent ones -- were dominated by fully-silent windows reading
+# -240 dB on the meter's epsilon floor). The gate threshold is an open
+# question for the owner: it needs a listening check (does the
+# processed quiet actually breathe?) plus a metric refinement (e.g.
+# percentile-based, or silent-window aware) before it can gate anything.
+# Until then, this reports and exits 0; it only fails on infrastructure
+# errors (missing input that cannot be derived, or a processing
+# failure).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

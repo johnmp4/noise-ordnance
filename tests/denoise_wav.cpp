@@ -6,20 +6,26 @@
 // blocks, writes a 16-bit PCM mono WAV. No DPF, no GUI, no audio device.
 //
 // Usage: denoise_wav in.wav out.wav [blocksize] [reduction01] [hum]
-//        [smoothing] [floorLow] [floorMid] [floorHigh] [vadAdapt]
+//        [model] [pfbeta] [atten]
 //   blocksize   default 128 (typical DAW block)
 //   reduction01 default 1.0 (100%)
 //   hum         default 0 (off); 50 or 60 enables the hum notch module
-//   smoothing   default 0.5 (engine default); 0 = off, 1 = full
-//   floorLow/Mid/High defaults -24 dB (engine defaults); -80..0
-//   vadAdapt    default 0 (off); 0..1
-// Settings args are positional: to set vadAdapt you must set the earlier
+//   model       default 0 (DeepFilterNet3); 1 = DeepFilterNet3 Low Latency
+//   pfbeta      default 0.02 (engine default); 0 = post-filter off, 0..0.05
+//   atten       default 100 (engine default, no limit); 0..100 dB
+// Settings args are positional: to set atten you must set the earlier
 // ones too. Omitted settings keep the engine defaults, so existing drill
 // runs (which pass only block/reduction/hum) behave exactly as before.
 //
-// This is the regression entry point: tests/run_drills.sh drives it over the
-// drill files and tests/measure.py checks the numbers. If you change the DSP,
-// run the drills -- a synth tone is NOT a valid test signal for this model.
+// Model files come from $NOISE_ORDNANCE_MODEL_DIR, else
+// ./third_party/models (the scripts run from the repo root). A missing
+// model is a hard error here, not a silent dry run: the harness exits
+// 1 so a broken setup can never produce a "passing" drill.
+//
+// This is the regression entry point: tests/run_drills.sh drives it over
+// the drill files and tests/measure.py checks the numbers. If you change
+// the DSP, run the drills -- a synth tone is NOT a valid test signal for
+// this model.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -143,19 +149,21 @@ bool writeWav(const char* path, const Wav& wav, std::string& err) {
 int main(int argc, char** argv) {
   if (argc < 3) {
     std::fprintf(stderr, "usage: %s in.wav out.wav [blocksize] [reduction01] [hum] "
-                         "[smoothing] [floorLow] [floorMid] [floorHigh] [vadAdapt]\n", argv[0]);
+                         "[model] [pfbeta] [atten]\n", argv[0]);
     return 2;
   }
   const uint32_t block = argc > 3 ? static_cast<uint32_t>(std::atoi(argv[3])) : 128;
   const float reduction = argc > 4 ? static_cast<float>(std::atof(argv[4])) : 1.0f;
   const float humHz = argc > 5 ? static_cast<float>(std::atof(argv[5])) : 0.0f;
-  const float smoothing = argc > 6 ? static_cast<float>(std::atof(argv[6])) : 0.5f;
-  const float floorLow = argc > 7 ? static_cast<float>(std::atof(argv[7])) : -24.0f;
-  const float floorMid = argc > 8 ? static_cast<float>(std::atof(argv[8])) : -24.0f;
-  const float floorHigh = argc > 9 ? static_cast<float>(std::atof(argv[9])) : -24.0f;
-  const float vadAdapt = argc > 10 ? static_cast<float>(std::atof(argv[10])) : 0.0f;
+  const int model = argc > 6 ? std::atoi(argv[6]) : 0;
+  const float pfbeta = argc > 7 ? static_cast<float>(std::atof(argv[7])) : 0.02f;
+  const float atten = argc > 8 ? static_cast<float>(std::atof(argv[8])) : 100.0f;
   if (block == 0 || block > 8192) {
     std::fprintf(stderr, "blocksize must be 1..8192\n");
+    return 2;
+  }
+  if (model < 0 || model >= DenoiserEngine::kModelCount) {
+    std::fprintf(stderr, "model must be 0..%d\n", DenoiserEngine::kModelCount - 1);
     return 2;
   }
 
@@ -166,20 +174,31 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  const char* envDir = std::getenv("NOISE_ORDNANCE_MODEL_DIR");
+  const std::string modelDir =
+      envDir != nullptr && envDir[0] != '\0' ? envDir : "./third_party/models";
+
   DenoiserEngine engine;
-  engine.init(static_cast<double>(in.sampleRate));
+  if (!engine.init(static_cast<double>(in.sampleRate), modelDir, model) ||
+      !engine.modelLoaded()) {
+    std::fprintf(stderr,
+                 "model did not load: %s/%s\n"
+                 "  Run: bash third_party/download-models.sh, or set "
+                 "NOISE_ORDNANCE_MODEL_DIR to a directory holding the two "
+                 "DeepFilterNet tarballs.\n",
+                 modelDir.c_str(), DenoiserEngine::modelFileName(model));
+    return 1;
+  }
   engine.setReduction(reduction);
   if (humHz > 0.0f)
     engine.setHum(true, humHz);
   // Settings args are optional: omitted ones keep the engine defaults
-  // (smoothing 0.5, floors -24 dB, VAD off), so drill runs that don't pass
-  // them behave exactly as before.
-  if (argc > 6)
-    engine.setSmoothing(smoothing);
+  // (post-filter beta 0.02, attenuation limit 100 = no limit), so drill
+  // runs that don't pass them behave exactly as before.
   if (argc > 7)
-    engine.setBandFloor(floorLow, floorMid, floorHigh);
-  if (argc > 10)
-    engine.setVadAdapt(vadAdapt);
+    engine.setPostFilterBeta(pfbeta);
+  if (argc > 8)
+    engine.setAttenLim(atten);
 
   Wav out;
   out.sampleRate = in.sampleRate;
@@ -198,9 +217,9 @@ int main(int argc, char** argv) {
     return 1;
   }
   std::fprintf(stderr, "denoise_wav: %zu samples @ %u Hz, block %u, reduction %.2f, "
-               "hum %.0f, smoothing %.2f, floors %.0f/%.0f/%.0f, vad %.2f -> %s\n",
+               "hum %.0f, model %d (%s), pfbeta %.3f, atten %.0f -> %s\n",
                total, in.sampleRate, block, reduction, humHz,
-               smoothing, floorLow, floorMid, floorHigh, vadAdapt, argv[2]);
+               model, DenoiserEngine::modelDisplayName(model),
+               pfbeta, atten, argv[2]);
   return 0;
 }
-

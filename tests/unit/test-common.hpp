@@ -10,11 +10,32 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 #include "DenoiserEngine.hpp"
 
 namespace unit_test {
+
+// Model directory for DF tests: $NOISE_ORDNANCE_MODEL_DIR. The engine
+// runs dry passthrough when no model loads, so a missing directory
+// must fail LOUDLY here -- otherwise every test would pass on dry
+// audio and a broken setup would look green. run-unit-tests.sh sets
+// the variable (default: third_party/models) and fails fast when the
+// tarballs are absent; this is the backstop for direct binary runs.
+inline std::string modelDir() {
+  const char* d = std::getenv("NOISE_ORDNANCE_MODEL_DIR");
+  return d != nullptr ? std::string(d) : std::string();
+}
+
+// Model index for tests that measure one model: $NOISE_ORDNANCE_MODEL_INDEX,
+// default 0 (DeepFilterNet3). The latency test runs once per index via
+// run-unit-tests.sh loop or by hand to cover every model.
+inline int modelIndex() {
+  const char* v = std::getenv("NOISE_ORDNANCE_MODEL_INDEX");
+  return v != nullptr ? std::atoi(v) : 0;
+}
 
 // Deterministic pseudo-random noise in [-0.8, 0.8] (xorshift32).
 // Distinct samples on purpose: equality checks against a delayed copy

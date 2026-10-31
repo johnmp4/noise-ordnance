@@ -7,6 +7,11 @@
 #   2. manifest.ttl names the plugin URI, the binary, and the plugin TTL
 #   3. the plugin TTL exists and declares the plugin (lv2:Plugin, same URI)
 #   4. if lv2ls is installed, the plugin is discoverable through it
+#   5. the bundle carries both DeepFilterNet model tarballs under
+#      models/ -- a bundle without models runs dry (the engine passes
+#      audio through), which is an incomplete build, not a working one.
+#      The build scripts copy them in after TTL generation; this check
+#      catches a build that skipped that step.
 # Bundle location: $LV2_BUNDLE, else third_party/bin/NoiseOrdnance.lv2
 # (the build output), else ~/.lv2/NoiseOrdnance.lv2 (the installed copy).
 # A missing bundle FAILS -- build first (make + TTL generation), don't
@@ -45,6 +50,11 @@ grep -qF "<$URI>" "$TTL" || fail "$TTL_NAME does not contain the plugin URI"
 grep -q "doap:name \"Noise Ordnance\"" "$TTL" || fail "$TTL_NAME does not name the plugin"
 
 echo "--- lv2-smoke: bundle structure OK ($BUNDLE)"
+
+for model in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+  [[ -f "$BUNDLE/models/$model" ]] || fail "bundle is missing models/$model (a bundle without models runs dry)"
+done
+echo "--- lv2-smoke: both model tarballs present in models/"
 
 if command -v lv2ls >/dev/null 2>&1; then
   if lv2ls 2>/dev/null | grep -qF "$URI"; then
