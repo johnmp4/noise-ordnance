@@ -17,30 +17,30 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 
 1. **Hum notch filter** — cascaded biquads at 50 or 60 Hz plus the first four harmonics. Old-school DSP, runs before everything else. Toggleable.
 2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use). DeepFilterNet2 is not offered: both DF2 models abort the host process at load time under libDF's tract backend (see BRANCH-NOTES.md).
-3. **Post-filter** — DeepFilterNet's perceptual cleanup stage, after the model. The Post Filter Beta knob (0–0.05, default 0.02; 0 = off) sets its strength.
-4. **Attenuation limit** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output: it is the DF-native equivalent of the old attenuation floors, but one global number instead of per-band values. This is the knob that keeps the "metallic" edge out.
+3. **Post-filter** — DeepFilterNet's perceptual cleanup stage, after the model. The Postfilter Strength knob (0–0.05, default 0.02; 0 = off) sets its strength.
+4. **Aggressiveness** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output: it is the DF-native equivalent of the old attenuation floors, but one global number instead of per-band values. This is the knob that keeps the "metallic" edge out.
 5. **Wet/dry mix** — the Reduction knob, with smoothed transitions so automation doesn't zip.
 
 ## Parameters (10)
 
 | # | Knob | Range | Default | Notes |
 |---|------|-------|---------|-------|
-| 0 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency |
-| 1 | Reduction | 0–100 % | 100 % | Wet/dry mix |
-| 2 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
-| 3 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact |
-| 4 | Bypass | on/off | off | True bypass (delay-compensated dry) |
-| 5 | Hum Filter | on/off | off | The notch cascade |
-| 6 | Mains Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
-| 7 | Post Filter Beta | 0–0.05 | 0.02 | 0 = post-filter off |
-| 8 | Attenuation Limit | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
-| 9 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
+| 0 | Bypass | on/off | off | True bypass (delay-compensated dry) |
+| 1 | Hum Filter | on/off | off | The notch cascade |
+| 2 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency |
+| 3 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
+| 4 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
+| 5 | Hum Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
+| 6 | Reduction | 0–100 % | 100 % | Wet/dry mix |
+| 7 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
+| 8 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
+| 9 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact |
 
 ### Tuning with the delta monitor
 
-1. Enable Delta Monitor and set the attenuation limit to 100 (no limit).
+1. Enable Delta Monitor and set Aggressiveness to 100 (no limit).
 2. Listen to what's being removed — heavy voice ghosting means the model is cutting too hard.
-3. Lower the attenuation limit until the voice in the delta is faint. A little ghosting is normal: the model always takes some voice along with the noise, so don't chase a delta with no voice in it at all. Note the direction: with the old per-band floors you *raised* the floor to ease off; with the attenuation cap you *lower* the cap.
+3. Lower Aggressiveness until the voice in the delta is faint. A little ghosting is normal: the model always takes some voice along with the noise, so don't chase a delta with no voice in it at all. Note the direction: with the old per-band floors you *raised* the floor to ease off; with Aggressiveness you *lower* it.
 4. Disable Delta Monitor. That's your sweet spot.
 
 ## Measured performance

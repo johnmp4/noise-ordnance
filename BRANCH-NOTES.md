@@ -37,16 +37,16 @@ until Jay has played with the knobs and decided.
 
 | # | Knob | Range | Default |
 |---|------|-------|---------|
-| 0 | Low Latency Model | off / on | off (DeepFilterNet3) |
-| 1 | Reduction | 0–100 % | 100 % |
-| 2 | Input Trim | −12 to +12 dB | 0 dB |
-| 3 | Output Trim | −12 to +12 dB | 0 dB |
-| 4 | Bypass | on/off | off |
-| 5 | Hum Filter | on/off | off |
-| 6 | Mains Freq | 50 / 60 Hz | 60 Hz |
-| 7 | Post Filter Beta | 0–0.05 | 0.02 (0 = post-filter off) |
-| 8 | Attenuation Limit | 0–100 dB | 100 dB (100 = no limit; lower = less suppression) |
-| 9 | Delta Monitor | on/off | off |
+| 0 | Bypass | on/off | off |
+| 1 | Hum Filter | on/off | off |
+| 2 | Low Latency Model | off / on | off (DeepFilterNet3) |
+| 3 | Delta Monitor | on/off | off |
+| 4 | Input Trim | −12 to +12 dB | 0 dB |
+| 5 | Hum Freq | 50 / 60 Hz | 60 Hz |
+| 6 | Reduction | 0–100 % | 100 % |
+| 7 | Aggressiveness | 0–100 dB | 100 dB (100 = no limit; lower = less suppression) |
+| 8 | Postfilter Strength | 0–0.05 | 0.02 (0 = post-filter off) |
+| 9 | Output Trim | −12 to +12 dB | 0 dB |
 
 The Low Latency Model param is a DPF boolean, so hosts render a
 labeled toggle, not an enum: OFF = DeepFilterNet3 (post-production,

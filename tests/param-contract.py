@@ -2,8 +2,8 @@
 # Copyright (c) 2026 John Peterman
 # SPDX-License-Identifier: MIT
 # Parameter contract test: the plugin's 10 parameters must match the README
-# table exactly -- names, symbols, ranges, defaults. Two sources of truth,
-# same verdict:
+# table exactly -- names, symbols, ranges, defaults, and order. Two sources
+# of truth, same verdict:
 #   --ttl PATH     parse the generated LV2 plugin TTL (the artifact hosts
 #                  actually read; preferred when a bundle has been built)
 #   --source PATH  parse NoiseOrdnance.cpp initParameter (the source the
@@ -34,11 +34,27 @@ EXPECTED = {
     "output_trim": ("Output Trim", -12, 12, 0),
     "bypass": ("Bypass", 0, 1, 0),
     "hum_enable": ("Hum Filter", 0, 1, 0),
-    "hum_freq": ("Mains Freq", 50, 60, 60),
-    "post_filter_beta": ("Post Filter Beta", 0, 0.05, 0.02),
-    "atten_lim": ("Attenuation Limit", 0, 100, 100),
+    "hum_freq": ("Hum Freq", 50, 60, 60),
+    "post_filter_beta": ("Postfilter Strength", 0, 0.05, 0.02),
+    "atten_lim": ("Aggressiveness", 0, 100, 100),
     "delta_monitor": ("Delta Monitor", 0, 1, 0),
 }
+
+# Display order hosts see (switches, then sliders, each in audio-chain
+# order). Both parsers preserve source order (dict insertion order), so
+# the found key order must equal this exactly, in either mode.
+EXPECTED_ORDER = [
+    "bypass",
+    "hum_enable",
+    "low_latency",
+    "delta_monitor",
+    "input_trim",
+    "hum_freq",
+    "reduction",
+    "atten_lim",
+    "post_filter_beta",
+    "output_trim",
+]
 
 
 def parse_ttl(text):
@@ -156,6 +172,10 @@ def main(argv):
     for symbol in sorted(found):
         if symbol not in EXPECTED:
             failures.append(f"unexpected parameter (ghost?): {symbol} -> {found[symbol]}")
+    if list(found.keys()) != EXPECTED_ORDER:
+        failures.append(
+            f"parameter order mismatch: expected {EXPECTED_ORDER}, got {list(found.keys())}"
+        )
 
     if failures:
         for failure in failures:
