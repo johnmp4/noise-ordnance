@@ -110,17 +110,26 @@ DenoiserEngine::~DenoiserEngine() {
 // load) and false is returned. On success the current post-filter beta
 // and attenuation limit are applied (df_create starts with the
 // post-filter off).
-bool DenoiserEngine::loadModelFile(const std::string& path) {
+DFState* DenoiserEngine::createModelState(const std::string& path, size_t& outFrameLen) {
   if (!fileExists(path))
-    return false;
+    return nullptr;
   DFState* next = df_create(path.c_str(), attenLimDb_, nullptr);
   if (next == nullptr)
-    return false;
+    return nullptr;
   const size_t fl = df_get_frame_length(next);
   if (fl == 0 || fl > 4096) {
     df_free(next);
-    return false;
+    return nullptr;
   }
+  outFrameLen = fl;
+  return next;
+}
+
+bool DenoiserEngine::loadModelFile(const std::string& path) {
+  size_t fl = 0;
+  DFState* next = createModelState(path, fl);
+  if (next == nullptr)
+    return false;
   if (dfState_ != nullptr)
     df_free(dfState_);
   dfState_ = next;
@@ -203,13 +212,29 @@ bool DenoiserEngine::init(double hostSampleRate, const std::string& modelDir, in
 void DenoiserEngine::reset() {
   // Reload the current model to clear the DF state's internal history
   // (STFT + lookahead buffers), then clear the pipeline. A failed reload
-  // keeps the previous state (see loadModelFile). The worker stops
-  // across the reload (it touches dfState_) and restarts if it was up.
+  // keeps the previous state. The worker stops across the reload and
+  // restarts if it was up; the swap + clearPipeline run under the
+  // exclusive lock so neither the audio thread nor the worker can be
+  // touching the swapped/reset state (see stateMutex_ protocol).
   const bool wasRunning = workerRunning_.load();
   stopWorker();
+  DFState* next = nullptr;
+  size_t fl = 0;
   if (initialized_ && !modelDir_.empty())
-    loadModelFile(modelDir_ + "/" + modelFileName(modelIndex_));
+    next = createModelState(modelDir_ + "/" + modelFileName(modelIndex_), fl);
+  stateMutex_.lock();
+  if (next != nullptr) {
+    if (dfState_ != nullptr)
+      df_free(dfState_);
+    dfState_ = next;
+    df_set_post_filter_beta(dfState_, postFilterBeta_);
+    df_set_atten_lim(dfState_, attenLimDb_);
+    frameLen_ = static_cast<uint32_t>(fl);
+    frameBuf_.assign(frameLen_, 0.0f);
+    frameOutBuf_.assign(frameLen_, 0.0f);
+  }
   clearPipeline();
+  stateMutex_.unlock();
   if (wasRunning)
     startWorker();
 }
@@ -227,18 +252,36 @@ bool DenoiserEngine::setModel(int index) {
     return false;
   // The worker touches dfState_: stop it across the load, and restart
   // it if it was up -- including on load failure, where the previous
-  // state is preserved (see loadModelFile).
+  // state is preserved. The slow load runs OUTSIDE the lock: the audio
+  // thread keeps running the old model (sync fallback) on valid,
+  // untouched state. Only the fast swap + clearPipeline run under the
+  // exclusive lock (see stateMutex_ protocol): stopping the worker
+  // alone does NOT make the swap safe, because the audio thread's
+  // sync fallback can be inside df_process_frame while the UI thread
+  // frees dfState_ -- that race crashed a probe in tract.
   const bool wasRunning = workerRunning_.load();
   stopWorker();
-  if (!loadModelFile(modelDir_ + "/" + modelFileName(index))) {
+  size_t fl = 0;
+  DFState* next = createModelState(modelDir_ + "/" + modelFileName(index), fl);
+  if (next == nullptr) {
     if (wasRunning)
       startWorker();
     return false;  // keeps the current model
   }
+  stateMutex_.lock();
+  if (dfState_ != nullptr)
+    df_free(dfState_);
+  dfState_ = next;
+  df_set_post_filter_beta(dfState_, postFilterBeta_);
+  df_set_atten_lim(dfState_, attenLimDb_);
+  frameLen_ = static_cast<uint32_t>(fl);
+  frameBuf_.assign(frameLen_, 0.0f);
+  frameOutBuf_.assign(frameLen_, 0.0f);
   modelIndex_ = index;
   latency48k_ = kModelLatency48k[index];
   dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
   clearPipeline();
+  stateMutex_.unlock();
   if (wasRunning)
     startWorker();
   return true;
@@ -302,8 +345,14 @@ void DenoiserEngine::setPostFilterBeta(float beta) {
     betaDirty_.store(true);
     return;
   }
-  if (dfState_ != nullptr)
-    df_set_post_filter_beta(dfState_, beta);
+  if (dfState_ != nullptr) {
+    // Direct apply only happens with the worker down -- but the audio
+    // thread's sync fallback may still be inferring, so take shared.
+    stateMutex_.lock_shared();
+    if (dfState_ != nullptr)
+      df_set_post_filter_beta(dfState_, beta);
+    stateMutex_.unlock_shared();
+  }
 }
 
 void DenoiserEngine::setAttenLim(float db) {
@@ -313,8 +362,14 @@ void DenoiserEngine::setAttenLim(float db) {
     attenDirty_.store(true);
     return;
   }
-  if (dfState_ != nullptr)
-    df_set_atten_lim(dfState_, db);
+  if (dfState_ != nullptr) {
+    // See setPostFilterBeta: shared, because the audio thread's sync
+    // fallback may be inferring on dfState_ right now.
+    stateMutex_.lock_shared();
+    if (dfState_ != nullptr)
+      df_set_atten_lim(dfState_, db);
+    stateMutex_.unlock_shared();
+  }
 }
 
 void DenoiserEngine::setDeltaMonitor(bool enable) {
@@ -374,6 +429,17 @@ void DenoiserEngine::rebuildHumFilters() {
 void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   if (in == nullptr || out == nullptr || frames == 0)
     return;
+  // try_lock_shared: never block the audio thread. If a model switch
+  // holds the exclusive lock, this block passes audio through
+  // untouched; the post-switch pipeline reset realigns everything, so
+  // the skipped block leaves no offset behind. The large-block split
+  // runs under the single shared hold (processInternal per chunk, not
+  // process -- shared_mutex is not recursive).
+  if (!stateMutex_.try_lock_shared()) {
+    for (uint32_t i = 0; i < frames; ++i)
+      out[i] = in[i];
+    return;
+  }
   // Very large blocks would overflow the fixed scratch buffers: split
   // them into scratch-sized chunks (identical to the host calling with
   // smaller blocks, which this engine is invariant to -- see the
@@ -382,11 +448,16 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     uint32_t done = 0;
     while (done < frames) {
       const uint32_t n = std::min(kScratchSamples, frames - done);
-      process(in + done, out + done, n);
+      processInternal(in + done, out + done, n);
       done += n;
     }
-    return;
+  } else {
+    processInternal(in, out, frames);
   }
+  stateMutex_.unlock_shared();
+}
+
+void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frames) {
   if (!initialized_) {
     // Never init()'d (e.g. plugin constructed but not activated):
     // true passthrough. No model load is attempted from the audio
@@ -629,22 +700,33 @@ void DenoiserEngine::workerMain() {
       });
       if (!workerRunning_.load())
         break;
-      // Apply deferred DF params (see setPostFilterBeta/setAttenLim).
-      // The mutex is held here, but only for these cheap calls.
-      if (betaDirty_.exchange(false) && dfState_ != nullptr)
-        df_set_post_filter_beta(dfState_, pendingBeta_.load());
-      if (attenDirty_.exchange(false) && dfState_ != nullptr)
-        df_set_atten_lim(dfState_, pendingAtten_.load());
-      if (dfState_ == nullptr || frameLen_ == 0 || inRing_ == nullptr ||
-          outRing_ == nullptr || inRing_->available() < frameLen_ ||
-          outRing_->availableSpace() < frameLen_)
-        continue;  // spurious wakeup or a race with the audio thread
-    }  // release the mutex BEFORE inference -- never hold it across
-       // df_process_frame (that would serialize the worker with any
-       // setter waiting on the same mutex, and the point of the worker
-       // is to run inference off every other thread's path).
+    }  // release workerMutex_ BEFORE inference -- never hold it across
+       // df_process_frame, and never hold it together with
+       // stateMutex_ (setModel's stop path must not deadlock).
+    // Shared lock across the param application AND the frame: a model
+    // switch's exclusive lock waits for the frame to finish, so
+    // dfState_ is never freed under a running df_process_frame. The
+    // wait predicate above is only a wakeup hint; the checks here,
+    // under shared, are authoritative.
+    stateMutex_.lock_shared();
+    if (!workerRunning_.load()) {
+      stateMutex_.unlock_shared();
+      break;
+    }
+    // Apply deferred DF params (see setPostFilterBeta/setAttenLim).
+    if (betaDirty_.exchange(false) && dfState_ != nullptr)
+      df_set_post_filter_beta(dfState_, pendingBeta_.load());
+    if (attenDirty_.exchange(false) && dfState_ != nullptr)
+      df_set_atten_lim(dfState_, pendingAtten_.load());
+    if (dfState_ == nullptr || frameLen_ == 0 || inRing_ == nullptr ||
+        outRing_ == nullptr || inRing_->available() < frameLen_ ||
+        outRing_->availableSpace() < frameLen_) {
+      stateMutex_.unlock_shared();
+      continue;  // spurious wakeup or a race with the audio thread
+    }
     processDfFrame();
     ++workerFrames_;
+    stateMutex_.unlock_shared();
     // No notify back: the audio thread never sleeps on the worker; it
     // polls outRing every block.
   }

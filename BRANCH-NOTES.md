@@ -496,3 +496,79 @@ models, the deadline problem is solved; if DF3_ll still xruns,
 its per-frame cost exceeds even the worker's average-throughput
 budget on his machine, and the remaining levers are the 48k
 resampler bypass (above) or a smaller model (none available).
+
+Model-switch race: confirmed by crash, fixed with a reader-writer lock (Nov 1, 2026)
+--------------------------------------------------------------------------------
+Root cause: setModel() stopped the worker and then freed/recreated
+dfState_ and reset the rings/delay line from the UI thread. Stopping
+the worker is NOT enough: while it is down, the audio thread falls
+back to synchronous DF, so it can be inside df_process_frame while
+the UI thread frees dfState_. A multithreaded probe (audio thread
+in 128-blocks + UI thread firing model switches, reduction drags,
+and a bypass flip) aborted in tract with `index out of bounds: the
+len is 86 but the index is 104205505900971` -- use-after-free on the
+swapped dfState_, called from the audio thread's process(). Live,
+the same race usually corrupts instead of crashing (real blocks
+have idle gaps), which fits the intermittent phasey echo: a switch
+sometimes precedes it, it persists until the next switch (a clean
+reset realigns), it hits both models and mono/stereo, and L/R
+engines switch independently (one side quieter). A second race rode
+along: clearPipeline() reset the rings/delay line/stream position
+from the UI thread with no lock while process() used them.
+Fix (dsp/DenoiserEngine.{hpp,cpp}, protocol documented on
+stateMutex_): process() takes try_lock_shared -- it NEVER blocks
+the audio thread; if a switch holds exclusive, that block passes
+audio through untouched (the post-switch reset realigns
+everything, so the skipped block leaves no offset). workerMain()
+takes lock_shared across each frame (param application +
+processDfFrame). setModel()/reset() do the slow df_create OUTSIDE
+the lock (audio keeps running the old model on valid state), then
+take lock() (exclusive) only for the fast swap + clearPipeline.
+The df_set_* setters' direct-apply path (worker down) takes shared
+too. clearPipeline() itself does not lock: callers hold exclusive,
+except init() (single-threaded).
+Verification: the crashing probe now completes (18 switches, 2
+drags, bypass flip, worker on); unit suite 8/8 and param contract
+10/10 (source mode) still green. A real-time-paced version of the
+probe (blocks at 1x, same events) shows zero passthrough runs and
+a clean lag transition for every switch (each lands 0.5-1.0 s
+after its scheduled time -- df_create load + pipeline refill, not
+misalignment), with steady output at exactly the active model's
+latency (4656/5616). Caveat for future probe work: an UNPACED
+audio thread exaggerates the fix's cost -- a ~10 ms exclusive
+window lets unpaced audio burn thousands of blocks as passthrough
+(16 s of audio in one run), while live that window is ~4 blocks,
+inaudible under the switch dropout. Same for late-wet staging
+backlogs: live FIFO order + starvation-to-dry make late wet
+impossible; only the paced probe reflects live behavior.
+OPEN, separate, sync-path only: the event probe's sync run still
+shows post-bypass corruption (corr 0.07-0.13 for 2 s after
+un-bypassing, then a 0.70-0.76 plateau, never recovering to 0.99),
+while async is clean throughout (0.98+). The race fix did not
+cause or cure it. Live is async-only (activate() starts workers),
+and switch loads wipe sync state via clearPipeline, so this does
+not reach the live path -- but it is a real logic bug in the sync
+path (tests/harness). Discriminator for later: short bypass (0.2 s)
+vs long (2 s) -- washout would recover from the short one.
+
+Wet starvation shifts the wet stream permanently (found while writing
+the switch-race regression test, Nov 1, 2026)
+--------------------------------------------------------------------------------
+The render loop is FIFO with no absolute-time anchor for wet: when
+wet is unavailable at a position it renders dry instead, and the
+late-arriving wet then renders late by the starved amount -- and
+stays late, because every subsequent wet sample follows in order.
+So ANY wet starvation leaves a permanent wet/dry offset until the
+next pipeline reset (setModel/reset only; bypass does not reset).
+Measured: an unpaced test audio thread (or drains every 32 blocks)
+outruns the worker, starves repeatedly, and lands at a constant
+wrong lag (6544, and 17744 fully unpaced, instead of 5616); a
+per-block drain (test-async's pattern) stays aligned at 5616
+exactly. Live this is safe: the worker runs far ahead of real time
+(4-6% DSP in Carla, 8-9% in Ardour at 128), so it never falls
+behind, and a model switch resets any shift anyway. It is a second
+candidate mechanism for the live echo if the worker ever stalls
+under load -- but the switch race above is the confirmed one (it
+crashed the probe). A future robustness fix would anchor wet
+consumption to streamPos_ (drop late wet instead of rendering it
+late); out of scope for the race fix.

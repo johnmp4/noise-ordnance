@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -144,14 +145,25 @@ private:
 
   static void debugLog(const char* fmt, ...);
   bool loadModelFile(const std::string& path);
+  // Create + validate a DF state WITHOUT touching member state (the
+  // slow df_create lives here). setModel/reset load through this, then
+  // swap under the exclusive lock; loadModelFile uses it too.
+  DFState* createModelState(const std::string& path, size_t& outFrameLen);
+  // Caller must hold stateMutex_ exclusive, except init(), which runs
+  // single-threaded before activation and never races process().
   void clearPipeline();
   // Run one DF frame from the input ring to the output ring, applying
   // the silence gate and the bypass-settled skip (see process()).
   // Callers must guarantee inRing_->available() >= frameLen_ and
-  // dfState_ != nullptr. Runs on the audio thread in sync mode and on
-  // the worker thread in async mode -- never both at once (the worker
-  // runs only while the plugin has started it; tests use sync).
+  // dfState_ != nullptr, and must hold stateMutex_ shared. Runs on
+  // the audio thread in sync mode and on the worker thread in async
+  // mode -- never both at once (the worker runs only while the plugin
+  // has started it; tests use sync).
   void processDfFrame();
+  // process() body without locking (process() takes shared and then
+  // calls this per chunk; shared_mutex is not recursive, so the
+  // large-block split must not re-enter process()).
+  void processInternal(const float* in, float* out, uint32_t frames);
 
   double hostRate_ = 48000.0;
   float reduction_ = 1.0f;
@@ -207,6 +219,32 @@ private:
   // async mode -- never both, since mode switches stop the worker).
   uint32_t silentFrames_ = 0;
   uint64_t gatedFrames_ = 0;
+  // Thread-safety protocol (model-switch race fix, Nov 1, 2026).
+  // setModel/reset swap dfState_ and reset the rings, resamplers, dry
+  // delay line, and stream position -- all state the audio thread
+  // (process, including its sync fallback) and the worker thread
+  // (processDfFrame) touch. Stopping the worker is NOT enough: while
+  // it is down, the audio thread falls back to synchronous DF, so it
+  // can be inside df_process_frame while the UI thread frees
+  // dfState_ -- proven by a multithreaded probe that crashed in
+  // tract on freed graph memory (index out of bounds on a garbage
+  // index). Protocol: process() takes try_lock_shared -- it NEVER
+  // blocks the audio thread; if a switch holds exclusive, that block
+  // passes audio through untouched (the post-switch reset realigns
+  // everything, so the skipped block leaves no offset behind).
+  // workerMain() takes lock_shared across each frame (param
+  // application + processDfFrame). setModel()/reset() do the slow
+  // model load OUTSIDE the lock (the audio thread keeps running the
+  // old model on valid, untouched state), then take lock()
+  // (exclusive) only for the fast swap + clearPipeline. The plain
+  // float params (reduction, trims, bypass, hum switches) stay
+  // lock-free: a stale read costs at most one block, inaudible.
+  // The df_set_* setters' direct-apply path (worker down) takes
+  // shared too -- a setter must never touch dfState_ while the audio
+  // thread is inferring on it. The worker-loop wait predicate reads
+  // dfState_/frameLen_ without the lock, but only as a wakeup hint;
+  // every actual use is re-checked under shared.
+  std::shared_mutex stateMutex_;
   // Worker thread state. dfState_ is touched only by the worker while
   // it runs, so the df_set_* setters defer through atomics when the
   // worker is up (applied at the top of the worker loop) and apply
