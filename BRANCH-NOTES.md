@@ -38,14 +38,14 @@ until Jay has played with the knobs and decided.
 | # | Knob | Range | Default |
 |---|------|-------|---------|
 | 0 | Bypass | on/off | off |
-| 1 | Hum Filter | on/off | off |
-| 2 | Low Latency Model | off / on | off (DeepFilterNet3) |
-| 3 | Delta Monitor | on/off | off |
-| 4 | Input Trim | −12 to +12 dB | 0 dB |
-| 5 | Hum Freq | 50 / 60 Hz | 60 Hz |
-| 6 | Reduction | 0–100 % | 100 % |
-| 7 | Aggressiveness | 0–100 dB | 100 dB (100 = no limit; lower = less suppression) |
-| 8 | Postfilter Strength | 0–0.05 | 0.02 (0 = post-filter off) |
+| 1 | Input Trim | −12 to +12 dB | 0 dB |
+| 2 | Hum Filter | on/off | off |
+| 3 | Hum Freq | 50 / 60 Hz | 60 Hz |
+| 4 | Low Latency Model | off / on | off (DeepFilterNet3) |
+| 5 | Reduction | 0–100 % | 100 % |
+| 6 | Aggressiveness | 0–100 dB | 100 dB (100 = no limit; lower = less suppression) |
+| 7 | Postfilter Strength | 0–0.05 | 0.02 (0 = post-filter off) |
+| 8 | Delta Monitor | on/off | off |
 | 9 | Output Trim | −12 to +12 dB | 0 dB |
 
 The Low Latency Model param is a DPF boolean, so hosts render a

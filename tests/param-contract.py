@@ -40,19 +40,22 @@ EXPECTED = {
     "delta_monitor": ("Delta Monitor", 0, 1, 0),
 }
 
-# Display order hosts see (switches, then sliders, each in audio-chain
-# order). Both parsers preserve source order (dict insertion order), so
-# the found key order must equal this exactly, in either mode.
+# Display order hosts see: intermixed so related parameters group in flat
+# lists (Carla stacks all parameters in port order). Ardour separates
+# switches from sliders but preserves each subsequence, so its two-column
+# layout pairs the same groups. Both parsers preserve source order (dict
+# insertion order), so the found key order must equal this exactly, in
+# either mode.
 EXPECTED_ORDER = [
     "bypass",
-    "hum_enable",
-    "low_latency",
-    "delta_monitor",
     "input_trim",
+    "hum_enable",
     "hum_freq",
+    "low_latency",
     "reduction",
     "atten_lim",
     "post_filter_beta",
+    "delta_monitor",
     "output_trim",
 ]
 

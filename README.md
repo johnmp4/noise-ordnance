@@ -26,14 +26,14 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 | # | Knob | Range | Default | Notes |
 |---|------|-------|---------|-------|
 | 0 | Bypass | on/off | off | True bypass (delay-compensated dry) |
-| 1 | Hum Filter | on/off | off | The notch cascade |
-| 2 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency |
-| 3 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
-| 4 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
-| 5 | Hum Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
-| 6 | Reduction | 0–100 % | 100 % | Wet/dry mix |
-| 7 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
-| 8 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
+| 1 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
+| 2 | Hum Filter | on/off | off | The notch cascade |
+| 3 | Hum Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
+| 4 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency |
+| 5 | Reduction | 0–100 % | 100 % | Wet/dry mix |
+| 6 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
+| 7 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
+| 8 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
 | 9 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact |
 
 ### Tuning with the delta monitor

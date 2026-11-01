@@ -37,11 +37,13 @@ public:
   const char* getLicense() const override { return DISTRHO_PLUGIN_LICENSE; }
   uint32_t getVersion() const override { return d_version(1, 0, 0); }
 
-  // Parameter order (hosts display in index order): switches first, then
-  // sliders, each group in audio-chain order:
-  //   switches: Bypass, Hum Filter, Low Latency Model, Delta Monitor
-  //   sliders: Input Trim, Hum Freq, Reduction, Aggressiveness,
-  //            Postfilter Strength, Output Trim
+  // Parameter order (hosts display in index order): intermixed so related
+  // parameters group in flat lists (Carla stacks all parameters in port
+  // order). Ardour separates switches from sliders but preserves each
+  // subsequence, so its two-column layout pairs the same groups:
+  //   Bypass, Input Trim, Hum Filter, Hum Freq, Low Latency Model,
+  //   Reduction, Aggressiveness, Postfilter Strength, Delta Monitor,
+  //   Output Trim
   // Symbols are the stable automation IDs: only display names changed
   // (Mains Freq -> Hum Freq, Attenuation Limit -> Aggressiveness,
   // Post Filter Beta -> Postfilter Strength).
@@ -56,6 +58,15 @@ public:
         param.ranges.max = 1.0f;
         break;
       case 1:
+        param.hints = kParameterIsAutomatable;
+        param.name = "Input Trim";
+        param.symbol = "input_trim";
+        param.ranges.def = 0.0f;
+        param.ranges.min = -12.0f;
+        param.ranges.max = 12.0f;
+        param.unit = "dB";
+        break;
+      case 2:
         param.hints = kParameterIsAutomatable | kParameterIsBoolean;
         param.name = "Hum Filter";
         param.symbol = "hum_enable";
@@ -63,7 +74,16 @@ public:
         param.ranges.min = 0.0f;
         param.ranges.max = 1.0f;
         break;
-      case 2:
+      case 3:
+        param.hints = kParameterIsAutomatable | kParameterIsInteger;
+        param.name = "Hum Freq";
+        param.symbol = "hum_freq";
+        param.ranges.def = 60.0f;
+        param.ranges.min = 50.0f;
+        param.ranges.max = 60.0f;
+        param.unit = "Hz";
+        break;
+      case 4:
         // Low Latency Model switch: OFF = DeepFilterNet3 (post-production,
         // default), ON = DeepFilterNet3 Low Latency (no lookahead). A
         // boolean renders as a labeled toggle in hosts instead of an
@@ -75,33 +95,7 @@ public:
         param.ranges.min = 0.0f;
         param.ranges.max = 1.0f;
         break;
-      case 3:
-        param.hints = kParameterIsAutomatable | kParameterIsBoolean;
-        param.name = "Delta Monitor";
-        param.symbol = "delta_monitor";
-        param.ranges.def = 0.0f;
-        param.ranges.min = 0.0f;
-        param.ranges.max = 1.0f;
-        break;
-      case 4:
-        param.hints = kParameterIsAutomatable;
-        param.name = "Input Trim";
-        param.symbol = "input_trim";
-        param.ranges.def = 0.0f;
-        param.ranges.min = -12.0f;
-        param.ranges.max = 12.0f;
-        param.unit = "dB";
-        break;
       case 5:
-        param.hints = kParameterIsAutomatable | kParameterIsInteger;
-        param.name = "Hum Freq";
-        param.symbol = "hum_freq";
-        param.ranges.def = 60.0f;
-        param.ranges.min = 50.0f;
-        param.ranges.max = 60.0f;
-        param.unit = "Hz";
-        break;
-      case 6:
         param.hints = kParameterIsAutomatable;
         param.name = "Reduction";
         param.symbol = "reduction";
@@ -110,7 +104,7 @@ public:
         param.ranges.max = 100.0f;
         param.unit = "%";
         break;
-      case 7:
+      case 6:
         // Aggressiveness: the attenuation limit, renamed for direction.
         // The value is still max attenuation in dB: 0 = no attenuation
         // allowed, 100 = no cap. Right = the model cuts deeper.
@@ -122,7 +116,7 @@ public:
         param.ranges.max = 100.0f;
         param.unit = "dB";
         break;
-      case 8:
+      case 7:
         // Postfilter Strength: the post-filter beta, renamed so the
         // control reads as a strength. 0 = post-filter off.
         param.hints = kParameterIsAutomatable;
@@ -131,6 +125,14 @@ public:
         param.ranges.def = 0.02f;
         param.ranges.min = 0.0f;
         param.ranges.max = 0.05f;
+        break;
+      case 8:
+        param.hints = kParameterIsAutomatable | kParameterIsBoolean;
+        param.name = "Delta Monitor";
+        param.symbol = "delta_monitor";
+        param.ranges.def = 0.0f;
+        param.ranges.min = 0.0f;
+        param.ranges.max = 1.0f;
         break;
       case 9:
         param.hints = kParameterIsAutomatable;
@@ -164,10 +166,21 @@ public:
         engineR.setBypassed(value > 0.5f);
         break;
       case 1:
-        engineL.setHum(value > 0.5f, params[5]);
-        engineR.setHum(value > 0.5f, params[5]);
+        engineL.setInputTrim(value);
+        engineR.setInputTrim(value);
         break;
       case 2:
+        engineL.setHum(value > 0.5f, params[3]);
+        engineR.setHum(value > 0.5f, params[3]);
+        break;
+      case 3:
+        {
+          const float mains = value >= 55.0f ? 60.0f : 50.0f;
+          engineL.setHum(params[2] > 0.5f, mains);
+          engineR.setHum(params[2] > 0.5f, mains);
+        }
+        break;
+      case 4:
         // Synchronous model reload (test branch: load time is not a
         // concern). Switch ON = low-latency model, OFF = post-production
         // model. Different models have different latencies, so the
@@ -176,32 +189,21 @@ public:
           engineR.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3);
         setLatency(engineL.latencySamples());
         break;
-      case 3:
-        engineL.setDeltaMonitor(value > 0.5f);
-        engineR.setDeltaMonitor(value > 0.5f);
-        break;
-      case 4:
-        engineL.setInputTrim(value);
-        engineR.setInputTrim(value);
-        break;
       case 5:
-        {
-          const float mains = value >= 55.0f ? 60.0f : 50.0f;
-          engineL.setHum(params[1] > 0.5f, mains);
-          engineR.setHum(params[1] > 0.5f, mains);
-        }
-        break;
-      case 6:
         engineL.setReduction(value / 100.0f);
         engineR.setReduction(value / 100.0f);
         break;
-      case 7:
+      case 6:
         engineL.setAttenLim(value);
         engineR.setAttenLim(value);
         break;
-      case 8:
+      case 7:
         engineL.setPostFilterBeta(value);
         engineR.setPostFilterBeta(value);
+        break;
+      case 8:
+        engineL.setDeltaMonitor(value > 0.5f);
+        engineR.setDeltaMonitor(value > 0.5f);
         break;
       case 9:
         engineL.setOutputTrim(value);
@@ -228,25 +230,25 @@ public:
       if (bundle != nullptr && bundle[0] != '\0')
         modelDir = std::string(bundle) + "/models";
     }
-    const int model = params[2] > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3;
+    const int model = params[4] > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3;
     engineL.init(getSampleRate(), modelDir, model);
     engineR.init(getSampleRate(), modelDir, model);
     // Re-apply parameters (init resets engine state; the model itself
-    // was just loaded from params[2], so it is not re-selected here).
+    // was just loaded from params[4], so it is not re-selected here).
     engineL.setBypassed(params[0] > 0.5f);
     engineR.setBypassed(params[0] > 0.5f);
-    engineL.setHum(params[1] > 0.5f, params[5] >= 55.0f ? 60.0f : 50.0f);
-    engineR.setHum(params[1] > 0.5f, params[5] >= 55.0f ? 60.0f : 50.0f);
-    engineL.setDeltaMonitor(params[3] > 0.5f);
-    engineR.setDeltaMonitor(params[3] > 0.5f);
-    engineL.setInputTrim(params[4]);
-    engineR.setInputTrim(params[4]);
-    engineL.setReduction(params[6] / 100.0f);
-    engineR.setReduction(params[6] / 100.0f);
-    engineL.setAttenLim(params[7]);
-    engineR.setAttenLim(params[7]);
-    engineL.setPostFilterBeta(params[8]);
-    engineR.setPostFilterBeta(params[8]);
+    engineL.setInputTrim(params[1]);
+    engineR.setInputTrim(params[1]);
+    engineL.setHum(params[2] > 0.5f, params[3] >= 55.0f ? 60.0f : 50.0f);
+    engineR.setHum(params[2] > 0.5f, params[3] >= 55.0f ? 60.0f : 50.0f);
+    engineL.setReduction(params[5] / 100.0f);
+    engineR.setReduction(params[5] / 100.0f);
+    engineL.setAttenLim(params[6]);
+    engineR.setAttenLim(params[6]);
+    engineL.setPostFilterBeta(params[7]);
+    engineR.setPostFilterBeta(params[7]);
+    engineL.setDeltaMonitor(params[8] > 0.5f);
+    engineR.setDeltaMonitor(params[8] > 0.5f);
     engineL.setOutputTrim(params[9]);
     engineR.setOutputTrim(params[9]);
     setLatency(engineL.latencySamples());
@@ -277,9 +279,9 @@ public:
 private:
   DenoiserEngine engineL;
   DenoiserEngine engineR;
-  // Order: Bypass, Hum Filter, Low Latency, Delta, In Trim, Hum Freq,
-  // Reduction, Aggressiveness, Postfilter, Out Trim.
-  float params[10] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 60.0f, 100.0f, 100.0f, 0.02f, 0.0f};
+  // Order: Bypass, In Trim, Hum Filter, Hum Freq, Low Latency, Reduction,
+  // Aggressiveness, Postfilter, Delta, Out Trim.
+  float params[10] = {0.0f, 0.0f, 0.0f, 60.0f, 0.0f, 100.0f, 100.0f, 0.02f, 0.0f, 0.0f};
 
   DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NoiseOrdnance)
 };
