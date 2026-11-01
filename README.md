@@ -25,7 +25,7 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 
 | # | Knob | Range | Default | Notes |
 |---|------|-------|---------|-------|
-| 0 | Bypass | on/off | off | True bypass (delay-compensated dry) |
+| 0 | Bypass | on/off | off | True bypass (delay-compensated dry, untrimmed — the A/B reference) |
 | 1 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
 | 2 | Hum Filter | on/off | off | The notch cascade |
 | 3 | Hum Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
@@ -34,7 +34,7 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 | 6 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
 | 7 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
 | 8 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
-| 9 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact |
+| 9 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact (wet signal only; bypass is untrimmed) |
 
 ### Tuning with the delta monitor
 

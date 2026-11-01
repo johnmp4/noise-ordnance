@@ -393,7 +393,7 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     // thread -- and, importantly, not during TTL generation either,
     // which instantiates the plugin without activating it.
     for (uint32_t i = 0; i < frames; ++i)
-      out[i] = in[i] * outTrim_;
+      out[i] = in[i];
     return;
   }
 
@@ -516,9 +516,15 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   const uint32_t dsize = static_cast<uint32_t>(dryDelay_.size());
   uint32_t wetUsed = 0;
   for (uint32_t i = 0; i < frames; ++i) {
-    mix_ += (target - mix_) * coeff;
-    if (std::fabs(target - mix_) < 1e-6f)
-      mix_ = target;  // snap: no permanent ~1e-6 dry leak at steady state
+    // Mix ramp: exponential approach with a stall-detect snap. In float
+    // arithmetic the ramp stalls once the increment drops below half an
+    // ulp of mix_ (gap ~1.4e-5 at 48 kHz) -- and that gap is above any
+    // small fixed snap threshold, so a threshold snap alone leaves a
+    // permanent dry leak at steady state. When the update stops moving
+    // mix_, jump to the target instead: the step is the stall gap
+    // itself (inaudible, <= -85 dB in the mix coefficient).
+    const float newMix = mix_ + (target - mix_) * coeff;
+    mix_ = (newMix == mix_ && target != mix_) ? target : newMix;
     // Dry sample from dryDelayLen_ ago: input written at
     // (write - frames + i), minus the delay.
     const uint32_t didx =
@@ -527,9 +533,13 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     const uint64_t pos = streamPos_ + i;
     float outSample;
     if (pos < wetStart_ || wetUsed >= pendingHostCount_) {
-      // Not yet wet, or starved: delayed dry (never undelayed dry --
-      // that would shift the sample by the full latency).
-      outSample = dry * outTrim_;
+      // Not yet wet, or starved: delayed dry, never undelayed dry --
+      // that would shift the sample by the full latency. Dry is never
+      // trimmed: output trim is makeup gain for the processed signal,
+      // and dry was never processed -- so bypass (which outputs this
+      // path once settled) is a true level reference for A/B
+      // comparison, and turning the trim never moves the reference.
+      outSample = dry;
     } else {
       const float wet = pendingHost_[wetUsed++];
       const float mixed = dry * (1.0f - mix_) + wet * mix_;
@@ -537,7 +547,11 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
         // Delta monitor: output what was removed (dry - wet).
         outSample = (dry - mixed) * outTrim_;
       } else {
-        outSample = mixed * outTrim_;
+        // Output trim applies to the wet component only: dry keeps its
+        // original level at every mix position, so a gain-matched
+        // full-wet output stays level-matched across the whole mix
+        // range instead of getting louder toward the middle.
+        outSample = dry * (1.0f - mix_) + wet * mix_ * outTrim_;
       }
     }
     out[i] = outSample;
