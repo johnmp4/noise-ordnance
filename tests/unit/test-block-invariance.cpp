@@ -3,27 +3,25 @@
 
 // Engine unit test: block-size invariance.
 // The engine must produce bit-identical output for the same input no
-// matter what block size the host calls process() with. This was broken
-// until Oct 2026: output at block 128 vs 1024 differed on 99.9% of
-// samples. The causes, all in the output assembly (not the DSP core):
-//   - consumePhase_ subtracted the INTENDED take before capping it by
-//     ring availability, so any shortfall was lost from the accounting
-//     and the wet stream fell permanently behind the output timeline by
-//     a chunk-dependent amount;
-//   - the output-priming gate flipped at a call boundary, so it flipped
-//     at a different absolute sample for different block sizes;
-//   - the tail fallback emitted undelayed dry while the mix path used
-//     delay-compensated dry, so every starved sample differed by the
-//     full latency;
-//   - the wet buffer was only refilled when completely empty, so it
-//     sawtoothed down to zero and starved in chunk-dependent runs.
-// The fix: subtract only what was actually popped, gate wet rendering
-// on a fixed absolute output position, emit delayed dry on starvation,
-// and top the wet buffer up on every call. This test pins the result:
-// same signal through fresh engines at several block sizes must come
-// out bit-identical, at 48 kHz (native), 44.1 kHz (fractional resample
-// ratio), and 96 kHz (2x upsample), plus one non-default tuning.
+// matter what block size the host calls process() with. The output
+// assembly is what makes this true, not the model core:
+//   - wet rendering is gated on a fixed absolute output position
+//     (wetStart_), so the gate never flips at a block-relative point;
+//   - consumption subtracts only what was actually popped, so a short
+//     take is never lost from the accounting;
+//   - starved samples fall back to delayed dry, never undelayed dry, so
+//     a starved sample differs from a wet sample by nothing but mix;
+//   - the wet buffer is topped up eagerly on every call, so it never
+//     sawtooths to zero in a chunk-dependent way.
+// This test pins the result: same signal through fresh engines at
+// several block sizes must come out bit-identical, at 48 kHz (native),
+// 44.1 kHz (fractional resample ratio), and 96 kHz (2x upsample), plus
+// one non-default tuning (post-filter beta + attenuation limit).
+// A failure here is a real finding about the DF engine's assembly, not
+// a test to delete: the Oct 2026 RNNoise engine failed this test for
+// exactly these assembly reasons before it was fixed.
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include "test-common.hpp"
@@ -55,14 +53,29 @@ Diff compare(const std::vector<float>& a, const std::vector<float>& b) {
   return d;
 }
 
+bool setupEngine(DenoiserEngine& engine, double rate) {
+  const std::string md = modelDir();
+  if (md.empty()) {
+    std::printf("FAIL block-invariance: NOISE_ORDNANCE_MODEL_DIR not set\n");
+    return false;
+  }
+  if (!engine.init(rate, md, modelIndex()) || !engine.modelLoaded()) {
+    std::printf("FAIL block-invariance: model did not load from %s\n", md.c_str());
+    return false;
+  }
+  return true;
+}
+
 std::vector<float> runAt(const std::vector<float>& sig, double rate, uint32_t block,
-                         bool tuned) {
+                         bool tuned, bool& ok) {
   DenoiserEngine engine;
-  engine.init(rate);
+  if (!setupEngine(engine, rate)) {
+    ok = false;
+    return {};
+  }
   if (tuned) {
-    engine.setSmoothing(0.8f);
-    engine.setBandFloor(-12.0f, -12.0f, -12.0f);
-    engine.setVadAdapt(0.7f);
+    engine.setPostFilterBeta(0.05f);
+    engine.setAttenLim(50.0f);
   }
   std::vector<float> out;
   runEngine(engine, sig, out, block);
@@ -77,11 +90,15 @@ int main() {
   // 48 kHz, five block sizes, defaults.
   const std::vector<float> sig48 = makeNoise(48000 * 2, 777);
   const uint32_t blocks[] = {128, 256, 512, 1024, 2048};
-  std::vector<float> ref48 = runAt(sig48, 48000.0, 128, false);
+  std::vector<float> ref48 = runAt(sig48, 48000.0, 128, false, ok);
+  if (!ok)
+    return 1;
   for (uint32_t b : blocks) {
     if (b == 128)
       continue;
-    const std::vector<float> out = runAt(sig48, 48000.0, b, false);
+    const std::vector<float> out = runAt(sig48, 48000.0, b, false, ok);
+    if (!ok)
+      return 1;
     const Diff d = compare(ref48, out);
     std::printf("  48 kHz block 128 vs %u: differ %zu/%zu, max diff %.6g%s\n", b,
                 d.count, ref48.size(), d.maxAbs,
@@ -97,8 +114,12 @@ int main() {
   const double rates[] = {44100.0, 96000.0};
   for (double rate : rates) {
     const std::vector<float> sig = resampleFrom48k(ref48b, rate);
-    const std::vector<float> a = runAt(sig, rate, 128, false);
-    const std::vector<float> b = runAt(sig, rate, 1024, false);
+    const std::vector<float> a = runAt(sig, rate, 128, false, ok);
+    if (!ok)
+      return 1;
+    const std::vector<float> b = runAt(sig, rate, 1024, false, ok);
+    if (!ok)
+      return 1;
     const Diff d = compare(a, b);
     std::printf("  %.0f Hz block 128 vs 1024: differ %zu/%zu, max diff %.6g\n", rate,
                 d.count, a.size(), d.maxAbs);
@@ -108,9 +129,13 @@ int main() {
     }
   }
 
-  // 48 kHz, non-default tuning (smoothing + floors + VAD adapt).
-  const std::vector<float> tuned128 = runAt(sig48, 48000.0, 128, true);
-  const std::vector<float> tuned1024 = runAt(sig48, 48000.0, 1024, true);
+  // 48 kHz, non-default tuning (post-filter beta + attenuation limit).
+  const std::vector<float> tuned128 = runAt(sig48, 48000.0, 128, true, ok);
+  if (!ok)
+    return 1;
+  const std::vector<float> tuned1024 = runAt(sig48, 48000.0, 1024, true, ok);
+  if (!ok)
+    return 1;
   const Diff dt = compare(tuned128, tuned1024);
   std::printf("  48 kHz tuned block 128 vs 1024: differ %zu/%zu, max diff %.6g\n",
               dt.count, tuned128.size(), dt.maxAbs);
