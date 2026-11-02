@@ -572,3 +572,14 @@ under load -- but the switch race above is the confirmed one (it
 crashed the probe). A future robustness fix would anchor wet
 consumption to streamPos_ (drop late wet instead of rendering it
 late); out of scope for the race fix.
+
+Build fix: plugin build needs C++17 (Nov 1, 2026)
+--------------------------------------------------------------------------------
+The race fix uses std::shared_mutex (C++17), but DPF defaults the
+plugin build to -std=gnu++11, so the plugin build failed with
+"shared_mutex does not name a type" while the unit tests (built at
+C++17) passed. The project Makefile now appends -std=gnu++17 to
+BUILD_CXX_FLAGS; GCC honors the last -std on the command line, so
+the append wins over DPF's default. Verified: DenoiserEngine.cpp
+fails under gnu++11 with exactly the reported error and compiles
+clean under gnu++17. This is the only C++17 feature in the engine.

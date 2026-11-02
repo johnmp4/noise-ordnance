@@ -38,6 +38,12 @@ SPEEXDSP_LIBS := $(shell pkg-config --libs speexdsp 2>/dev/null || echo "-lspeex
 
 BUILD_C_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
+# The model-switch race fix uses std::shared_mutex, which needs C++17.
+# DPF defaults the plugin build to -std=gnu++11, so pin gnu++17 here;
+# GCC honors the last -std on the command line, and this append lands
+# after DPF's, so it wins. (The unit tests already build at C++17,
+# which is why they passed while the plugin build failed.)
+BUILD_CXX_FLAGS += -std=gnu++17
 # A Rust staticlib needs the pthread/dl libs for std on Linux.
 EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) -lpthread -ldl $(DF_STATICLIB)
 
