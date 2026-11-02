@@ -157,6 +157,7 @@ void DenoiserEngine::clearPipeline() {
   mix_ = 0.0f;
   mixTarget_ = reduction_;
   streamPos_ = 0;
+  wetPos_ = wetStart_;  // front wet belongs to the first wet position
   pendingModelCount_ = 0;
   pendingHostCount_ = 0;
   silentFrames_ = 0;
@@ -451,6 +452,70 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   stateMutex_.unlock_shared();
 }
 
+// Stage wet for rendering: pop available model-rate wet from outRing_
+// into pendingModel_, then resample into pendingHost_. Popping into
+// pendingModel_ (not straight into the resampler) keeps the
+// resampler's input stream contiguous across blocks.
+void DenoiserEngine::stageWet() {
+  {
+    const uint32_t room = kScratchSamples - pendingModelCount_;
+    uint32_t take = static_cast<uint32_t>(outRing_->available());
+    if (take > room)
+      take = room;
+    if (take > 0) {
+      outRing_->pop(pendingModel_ + pendingModelCount_, take);
+      pendingModelCount_ += take;
+    }
+    // Popping freed output-ring room the worker may be waiting on.
+    if (workerRunning_.load())
+      workerCv_.notify_one();
+  }
+
+  // Eager resample top-up: run the output resampler whenever there are
+  // model samples waiting and host-side room, appending into
+  // pendingHost_. The buffer stays near full instead of sawtoothing to
+  // zero, so the render loop below (almost) never starves -- and when
+  // it does, the fallback is delayed dry, not undelayed dry. The
+  // resampler's output stream depends only on its input stream, not on
+  // chunking, so this stays block-size invariant.
+  if (pendingModelCount_ > 0 && pendingHostCount_ < kScratchSamples) {
+    spx_uint32_t modelIn = pendingModelCount_;
+    spx_uint32_t hostOut = kScratchSamples - pendingHostCount_;
+    speex_resampler_process_float(resOut_, 0, pendingModel_, &modelIn,
+                                  pendingHost_ + pendingHostCount_, &hostOut);
+    pendingHostCount_ += hostOut;
+    const uint32_t usedModel = modelIn;
+    if (usedModel < pendingModelCount_) {
+      std::memmove(pendingModel_, pendingModel_ + usedModel,
+                   (pendingModelCount_ - usedModel) * sizeof(float));
+    }
+    pendingModelCount_ -= usedModel;
+  }
+}
+
+// Discard stale wet (offline-render fix, Nov 2, 2026): pendingHost_[0]
+// belongs to position wetPos_; if the render has advanced past it
+// (starvation gaps fell back to dry), those samples are for positions
+// already rendered and must never sound. Drop the stale prefix so the
+// front aligns with streamPos_ (or as close as the buffer allows --
+// if the buffer empties first, the remaining gap persists and the
+// next staged wet gets dropped the same way on arrival).
+void DenoiserEngine::dropStaleWet() {
+  if (streamPos_ <= wetPos_)
+    return;
+  const uint64_t stale = streamPos_ - wetPos_;
+  const uint32_t drop =
+      stale > pendingHostCount_ ? pendingHostCount_ : static_cast<uint32_t>(stale);
+  if (drop == 0)
+    return;
+  if (drop < pendingHostCount_) {
+    std::memmove(pendingHost_, pendingHost_ + drop,
+                 (pendingHostCount_ - drop) * sizeof(float));
+  }
+  pendingHostCount_ -= drop;
+  wetPos_ += drop;
+}
+
 void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frames) {
   if (!initialized_) {
     // Never init()'d (e.g. plugin constructed but not activated):
@@ -530,42 +595,43 @@ void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frame
       processDfFrame();
   }
 
-  // Stage model-rate wet samples for the output resampler, up to scratch
-  // room. Popping into pendingModel_ (not straight into the resampler)
-  // keeps the resampler's input stream contiguous across blocks.
-  {
-    const uint32_t room = kScratchSamples - pendingModelCount_;
-    uint32_t take = static_cast<uint32_t>(outRing_->available());
-    if (take > room)
-      take = room;
-    if (take > 0) {
-      outRing_->pop(pendingModel_ + pendingModelCount_, take);
-      pendingModelCount_ += take;
-    }
-    // Popping freed output-ring room the worker may be waiting on.
-    if (workerRunning_.load())
-      workerCv_.notify_one();
-  }
+  stageWet();
+  dropStaleWet();
 
-  // Eager resample top-up: run the output resampler whenever there are
-  // model samples waiting and host-side room, appending into
-  // pendingHost_. The buffer stays near full instead of sawtoothing to
-  // zero, so the render loop below (almost) never starves -- and when
-  // it does, the fallback is delayed dry, not undelayed dry. The
-  // resampler's output stream depends only on its input stream, not on
-  // chunking, so this stays block-size invariant.
-  if (pendingModelCount_ > 0 && pendingHostCount_ < kScratchSamples) {
-    spx_uint32_t modelIn = pendingModelCount_;
-    spx_uint32_t hostOut = kScratchSamples - pendingHostCount_;
-    speex_resampler_process_float(resOut_, 0, pendingModel_, &modelIn,
-                                  pendingHost_ + pendingHostCount_, &hostOut);
-    pendingHostCount_ += hostOut;
-    const uint32_t usedModel = modelIn;
-    if (usedModel < pendingModelCount_) {
-      std::memmove(pendingModel_, pendingModel_ + usedModel,
-                   (pendingModelCount_ - usedModel) * sizeof(float));
+  // Bounded wait for worker wet (offline-render fix, Nov 2, 2026):
+  // if this block renders post-wetStart_ positions but the staged wet
+  // falls short, wait for the worker to produce more (it notifies
+  // wetCv_ after every frame) instead of declaring starvation at
+  // once. In realtime the worker is ahead, so the first staging
+  // already covers the block and this loop never runs -- realtime
+  // behavior is unchanged. In a freewheeling export the wait slows
+  // rendering to inference speed. On timeout the render below falls
+  // back to delayed dry for the shortfall, and the anchor above
+  // discards the stale wet when it arrives, so a timeout can cost a
+  // brief dry moment but never a smeared (late) wet frame. The loop
+  // never runs without a model (wet would never come) or in sync
+  // mode (the sync drain above already produced everything).
+  if (workerRunning_.load() && dfState_ != nullptr && frameLen_ > 0) {
+    const uint64_t blockEnd = streamPos_ + frames;
+    const uint64_t firstWet =
+        streamPos_ > wetStart_ ? streamPos_ : wetStart_;
+    if (blockEnd > firstWet) {
+      const uint32_t postWet =
+          static_cast<uint32_t>(blockEnd - firstWet);
+      const auto deadline = std::chrono::steady_clock::now() +
+                            std::chrono::milliseconds(kWetWaitMs);
+      while (pendingHostCount_ < postWet) {
+        if (!workerRunning_.load() ||
+            std::chrono::steady_clock::now() >= deadline)
+          break;
+        {
+          std::unique_lock<std::mutex> lk(wetMutex_);
+          wetCv_.wait_for(lk, std::chrono::milliseconds(5));
+        }
+        stageWet();
+        dropStaleWet();
+      }
     }
-    pendingModelCount_ -= usedModel;
   }
 
   // Single per-sample render loop, gated on absolute stream position:
@@ -627,6 +693,7 @@ void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frame
                    (pendingHostCount_ - wetUsed) * sizeof(float));
     }
     pendingHostCount_ -= wetUsed;
+    wetPos_ += wetUsed;  // consumed wet advances the anchor with it
   }
   streamPos_ += frames;
 }
@@ -654,6 +721,7 @@ void DenoiserEngine::stopWorker() {
   if (!workerRunning_.exchange(false))
     return;
   workerCv_.notify_all();
+  wetCv_.notify_all();  // wake an audio thread in the bounded wait
   if (worker_.joinable())
     worker_.join();
 }
@@ -721,7 +789,13 @@ void DenoiserEngine::workerMain() {
     processDfFrame();
     ++workerFrames_;
     stateMutex_.unlock_shared();
-    // No notify back: the audio thread never sleeps on the worker; it
-    // polls outRing every block.
+    // Notify the audio thread's bounded wait (offline-render fix):
+    // new wet is in outRing_. The lock is held only for the notify;
+    // the audio thread's wait releases wetMutex_ while sleeping, so
+    // this can never block behind it.
+    {
+      std::lock_guard<std::mutex> lk(wetMutex_);
+      wetCv_.notify_all();
+    }
   }
 }
