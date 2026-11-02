@@ -66,7 +66,7 @@ Same noisy clip, raw and through Noise Ordnance at default settings.
   Before: raw noisy clip.
 </audio>
 <audio controls>
-  <source src="../../tests/drills/paint-drying-combo-denoised.wav" type="audio/wav">
+  <source src="./paint-drying-combo-denoised.wav" type="audio/wav">
   After: through Noise Ordnance.
 </audio>
 
