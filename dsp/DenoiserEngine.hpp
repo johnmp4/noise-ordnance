@@ -153,7 +153,9 @@ private:
   // single-threaded before activation and never races process().
   void clearPipeline();
   // Run one DF frame from the input ring to the output ring, applying
-  // the silence gate and the bypass-settled skip (see process()).
+  // the silence gate (see process()). A bypass-settled skip used to
+  // live here too; it was removed Nov 1, 2026 (bypass echo fix) --
+  // skipping inference across a bypass gap corrupts DF's state.
   // Callers must guarantee inRing_->available() >= frameLen_ and
   // dfState_ != nullptr, and must hold stateMutex_ shared. Runs on
   // the audio thread in sync mode and on the worker thread in async

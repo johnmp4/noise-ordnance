@@ -287,34 +287,28 @@ bool DenoiserEngine::setModel(int index) {
   return true;
 }
 
-// One DF frame: pop a frame from the input ring, run it (or skip it),
-// push exactly one frame's worth of output to the output ring -- or
-// nothing, in the bypass-settled case, where the render loop falls back
-// to delayed dry anyway and the wet stream is unused.
-//   Bypass-settled skip: when bypass is on, the mix has settled at 0,
-// and Delta Monitor is off, the wet output is multiplied by zero, so
-// running inference is pure waste. Skipped only in that exact state:
-// during the 10 ms mix ramp (either direction) inference still runs,
-// and with Delta Monitor on it still runs (bypass + delta must output
-// silence, and the starvation fallback would output dry instead --
-// wrong). The pop already happened, so no input backlog accumulates
-// and un-bypassing resumes on current audio, not a burst of stale
-// frames. The wet stream restarts cleanly because the render loop
-// consumes pending wet in order and the model's delay is unchanged
-// by the gap (its delay is lookahead + STFT, not wall-clock time).
-//   Silence gate: see the constants in the header. Gated frames push
-// zeros (not nothing) so the wet stream's frame count -- and hence
-// wet/dry alignment -- never shifts.
+// One DF frame: pop a frame from the input ring, run it, push exactly
+// one frame's worth of output to the output ring.
+//   NOTE (Nov 1, 2026): this used to skip inference entirely when
+// bypass had settled (bypassed_ && mix_ == 0 && !deltaMonitor_),
+// on the theory that wet multiplied by zero is pure waste and the
+// stream would restart cleanly because the model's delay is
+// lookahead + STFT, not wall-clock time. That theory was WRONG:
+// the gap corrupts DF's internal temporal state, and on un-bypass
+// the wet stream resumes ~70 ms early and stays shifted until the
+// next pipeline reset (a model switch) -- the live bypass echo,
+// reproduced in a stereo probe (see BRANCH-NOTES, Bypass echo fix).
+// So inference now runs unconditionally here; during bypass the
+// render loop discards the wet (mix_ == 0 outputs delayed dry),
+// which costs active CPU while bypassed but keeps DF's state
+// continuous. The silence gate below is different: gated frames
+// push zeros (not nothing) so the wet stream's frame count -- and
+// hence wet/dry alignment -- never shifts.
+//   Silence gate: see the constants in the header.
 void DenoiserEngine::processDfFrame() {
   const uint32_t popped = inRing_->pop(frameBuf_.data(), frameLen_);
   if (popped != frameLen_)
     return;  // caller guarantees availability; be safe, not sorry
-  if (bypassed_ && mix_ == 0.0f && !deltaMonitor_) {
-    // Wet unused: skip inference entirely (no output pushed; the
-    // render loop's starvation fallback supplies delayed dry, which
-    // is exactly the bypass output).
-    return;
-  }
   double sumSq = 0.0;
   for (uint32_t i = 0; i < frameLen_; ++i) {
     const double x = frameBuf_[i];
@@ -519,8 +513,8 @@ void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frame
   if (modelLen > 0)
     inRing_->push(wetScratch_, modelLen);
 
-  // Run whole DF frames (processDfFrame: the silence gate and the
-  // bypass-settled skip live there). DeepFilterNet takes float audio
+  // Run whole DF frames (processDfFrame: the silence gate lives
+  // there). DeepFilterNet takes float audio
   // at +-1.0 (unlike RNNoise's int16-scale operating point) -- no
   // scaling here. The DF state buffers lookahead internally, so
   // output frames emerge delayed by the model's latency; that delay

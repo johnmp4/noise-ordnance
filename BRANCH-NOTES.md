@@ -382,9 +382,11 @@ windows hitting the meter bottom, not a gain figure.
 
 Two ways inference is skipped when its output is unused or
 inaudible. Both live in `processDfFrame()` (factored out of
-`process()` so the worker in improvement 3 reuses it), both keep
-the wet stream's frame count and timing intact, and neither changes
-any parameter, the TTL, or reported latency.
+`process()` so the worker in improvement 3 reuses it), and neither changes
+any parameter, the TTL, or reported latency. The silence gate keeps
+the wet stream's frame count and timing intact (it pushes zeros);
+the bypass-settled skip turned out NOT to (Nov 1, 2026 -- see
+Bypass echo fix at the end of this file) and has been removed.
 
 - Silence gate: a DF frame whose RMS is below -60 dBFS
   (`kSilentGateRms` = 0.001) is not worth a full inference -- the
@@ -583,3 +585,57 @@ BUILD_CXX_FLAGS; GCC honors the last -std on the command line, so
 the append wins over DPF's default. Verified: DenoiserEngine.cpp
 fails under gnu++11 with exactly the reported error and compiles
 clean under gnu++17. This is the only C++17 feature in the engine.
+
+Bypass echo fix: bypass-settled skip removed (Nov 1, 2026)
+--------------------------------------------------------------------------------
+Live report (latest build, incl. the race fix): the echo is now
+reproducible with the bypass switch alone. Stereo, plugin Bypass
+knob (not Ardour's), paint-drying combo file on a track to a stereo
+bus: bypass on long enough to hear the level difference gives an
+echo EVERY time; short on/off clicks never do; rapid short clicks
+do not stack; flipping the model switch clears it. The race fix
+covered switches only, so this is a second, bypass-only bug -- and
+it unifies the earlier sync-path post-bypass corruption (corr
+0.07-0.13 for 2 s after un-bypass, then a 0.70-0.76 plateau) as the
+same defect, not a separate one.
+
+Probe (stereo, async workers, paced 1x, block 128, combo input,
+Reduction 0.5, bypass 10-13 s): pre-bypass both channels exact at
+lag 5616 (corr 0.95-0.99). Post-bypass a persistent second peak
+near lag ~2128 appears in every window to 39 s, corr at 5616 drops
+to ~0.7, and L/R diverge (post-bypass L/R corr 0.40 vs 1.00
+pre-bypass). At full wet the wet is ENTIRELY at the wrong lag
+(corr at 5616 ~0.00, best lag 2096 drifting to 2384, corr
+0.98-0.997; full-wet L/R post-bypass corr -0.24, i.e. the channels
+anticorrelate). Control (no bypass) and short bypass (0.1 s) are
+clean and identical, L/R 1.00.
+
+Root cause: the bypass-settled skip in processDfFrame. Once the
+mix settles to exactly 0 (about 112 ms after bypass-on, the
+exponential ramp's stall-snap time -- hence short clicks never
+triggering it), the worker pops input frames and feeds DF nothing.
+The old comment claimed the stream would restart cleanly because
+DF's delay is lookahead + STFT, not wall-clock time. Wrong: the
+gap corrupts DF's internal temporal state, and on un-bypass the
+wet stream resumes ~70 ms early and the corrupted state sustains
+itself until the next pipeline reset (model switch). Each engine's
+state corrupts differently, hence the stereo phasey/spaced-out
+sound and the L/R divergence.
+
+Fix: the skip is deleted. Inference now runs unconditionally in
+processDfFrame; during bypass the render loop discards the wet
+(mix_ == 0 outputs delayed dry), which costs active CPU while
+bypassed but keeps DF's state continuous. A probe-only build with
+the skip forced off is clean and identical to the no-bypass
+control (every post-bypass window best lag 5616, corr 0.95-0.99,
+L/R identical), confirming the skip -- not the bypass itself --
+as the trigger. The silence gate is untouched: it pushes zeros,
+so it preserves frame count and alignment, and it still covers
+true idle. The reset-on-un-bypass alternative was rejected: it
+would put a ~117 ms wet dropout in the audio on every un-bypass.
+No parameter, TTL, latency, or port-index change: this fix cannot
+remap saved-session automation. Regression test:
+tests/unit/test-bypass-alignment.cpp (mono, clean drill, full wet,
+drain after every block, bypass 3 s on / 3 s off, final-window
+corr at 5616 > 0.9). Against the pre-fix engine it fails
+decisively (final corr -0.002, best lag 2576, corr 1.000).
