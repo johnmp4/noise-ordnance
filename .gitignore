@@ -13,6 +13,9 @@ bin/
 tests/build/
 tests/drills/*.wav
 !tests/drills/paint-drying-clean.wav
+# Drill run outputs (run_drills.sh writes denoised WAVs + measure logs
+# here; all regenerable from the clean drill, never committed).
+tests/drills/out/
 
 # Cloned third-party sources (restored via third_party/install-third-party.sh)
 third_party/dpf/
