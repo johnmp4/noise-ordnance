@@ -6,11 +6,13 @@
 #include "RingBuffer.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 
 #include <cstdarg>
 #include <cstdio>
+#include <sys/stat.h>
 
 void DenoiserEngine::debugLog(const char* fmt, ...) {
   (void)fmt;
@@ -25,10 +27,66 @@ void DenoiserEngine::debugLog(const char* fmt, ...) {
 #endif
 }
 
+namespace {
+
+// Model files (in the model directory) and display names, indexed by
+// DenoiserEngine::kModelDF3 / kModelDF3LL. The plugin's Low Latency
+// Model switch maps OFF -> index 0, ON -> index 1. DeepFilterNet2 is not
+// here: it does not load (see DenoiserEngine.hpp).
+const char* kModelFiles[DenoiserEngine::kModelCount] = {
+    "DeepFilterNet3_onnx.tar.gz",
+    "DeepFilterNet3_ll_onnx.tar.gz",
+};
+const char* kModelNames[DenoiserEngine::kModelCount] = {
+    "DeepFilterNet3",
+    "DeepFilterNet3 Low Latency",
+};
+
+// Measured wet-path latency at 48 kHz, per model, via cross-correlation
+// (tests/check-latency.py): the clean drill speech is run through the
+// engine at 100% wet and a mid-file segment of input vs output is
+// correlated; the peak lag is the number below. An impulse probe does
+// NOT work reliably for DF: the model gates near-silent frames, so a
+// lone impulse in silence gives no measurable output under libDF 0.5.6
+// (and only a marginal 1.6e-4 peak under main). latencySamples() scales these by hostRate/48000; the
+// samplerate unit test verifies the scaling holds within 10% at
+// 44.1/96 kHz.
+// Re-measure if the model files change: run tests/check-latency.py
+// and put the measured numbers here. Do NOT guess these numbers.
+//   DeepFilterNet3: 5616 = wetStart 4096 + chain lag 1520 (model STFT +
+//     lookahead + resamplers). At 48 kHz that is 117 ms total.
+//   DeepFilterNet3 Low Latency: 4656 = 4096 + 560 (97 ms total).
+// DeepFilterNet2 is not in this table: it does not load (see
+// DenoiserEngine.hpp), so it has no meaningful latency here.
+const uint32_t kModelLatency48k[DenoiserEngine::kModelCount] = {
+    5616,  // DeepFilterNet3 -- measured by correlation, see BRANCH-NOTES.md
+    4656,  // DeepFilterNet3 Low Latency -- measured by correlation
+};
+
+bool fileExists(const std::string& path) {
+  struct stat st;
+  return ::stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+}  // namespace
+
+const char* DenoiserEngine::modelFileName(int index) {
+  if (index < 0 || index >= kModelCount)
+    return kModelFiles[kModelDF3];
+  return kModelFiles[index];
+}
+
+const char* DenoiserEngine::modelDisplayName(int index) {
+  if (index < 0 || index >= kModelCount)
+    return kModelNames[kModelDF3];
+  return kModelNames[index];
+}
 
 DenoiserEngine::DenoiserEngine() = default;
 
 DenoiserEngine::~DenoiserEngine() {
+  // Stop the worker FIRST: it touches the rings and dfState_ below.
+  stopWorker();
   delete inRing_;
   delete outRing_;
 
@@ -40,43 +98,31 @@ DenoiserEngine::~DenoiserEngine() {
     speex_resampler_destroy(resOut_);
     resOut_ = nullptr;
   }
-  if (rnnoise_ != nullptr) {
-    rnnoise_destroy(rnnoise_);
-    rnnoise_ = nullptr;
+  if (dfState_ != nullptr) {
+    df_free(dfState_);
+    dfState_ = nullptr;
   }
 }
 
-// Measures the wet-path latency by sending an impulse through at 100% wet
-// and finding the output peak. The model suppresses the impulse (it's not
-// speech-like) but the peak remains detectable as the global maximum in the
-// search window. Runs at init time; ~1.5 s of audio at 44x realtime.
-void DenoiserEngine::calibrateDryDelay() {
-  const uint32_t rate = static_cast<uint32_t>(hostRate_);
-  const uint32_t settle = rate;          // 1 s of zeros (mix/pipeline settle)
-  const uint32_t tail = rate / 2;        // 0.5 s tail to catch the peak
-  const uint32_t total = settle + 1 + tail;
-  std::vector<float> in(total, 0.0f), out(total, 0.0f);
-  in[settle] = 1.0f;
-
-  const float savedReduction = reduction_;
-  setReduction(1.0f);  // 100% wet: we measure the wet path only
-  for (uint32_t d = 0; d < total;) {
-    uint32_t n = std::min<uint32_t>(128, total - d);
-    process(in.data() + d, out.data() + d, n);
-    d += n;
+// Load a model file into dfState_. The file MUST exist: df_create panics
+// (aborts) on a bad path, so a stat check happens before every call.
+// On failure the previous state is preserved (or stays null on first
+// load) and false is returned. On success the current post-filter beta
+// and attenuation limit are applied (df_create starts with the
+// post-filter off).
+DFState* DenoiserEngine::createModelState(const std::string& path, size_t& outFrameLen) {
+  if (!fileExists(path))
+    return nullptr;
+  DFState* next = df_create(path.c_str(), attenLimDb_, nullptr);
+  if (next == nullptr)
+    return nullptr;
+  const size_t fl = df_get_frame_length(next);
+  if (fl == 0 || fl > 4096) {
+    df_free(next);
+    return nullptr;
   }
-
-  float peak = 0.0f;
-  uint32_t at = 0;
-  for (uint32_t i = settle + 64; i < total; ++i) {
-    const float a = std::fabs(out[i]);
-    if (a > peak) { peak = a; at = i; }
-  }
-  if (at > settle && peak > 1e-4f) {
-    dryDelayLen_ = at - settle;
-  }
-  // else: keep the initial guess.
-  setReduction(savedReduction);
+  outFrameLen = fl;
+  return next;
 }
 
 void DenoiserEngine::init(double hostSampleRate) {
@@ -126,7 +172,7 @@ void DenoiserEngine::init(double hostSampleRate) {
   reset();
 }
 
-void DenoiserEngine::reset() {
+void DenoiserEngine::clearPipeline() {
   if (inRing_ != nullptr)
     inRing_->reset();
   if (outRing_ != nullptr)
@@ -151,49 +197,216 @@ void DenoiserEngine::reset() {
   pendingModelCount_ = 0;
   pendingHostCount_ = 0;
   dryDelayWrite_ = 0;
-  if (dryDelayLen_ > 0)
-    std::fill(dryDelay_.begin(), dryDelay_.end(), 0.0f);
   mix_ = 0.0f;
-
   mixTarget_ = reduction_;
-  std::memset(frameBuf_, 0, sizeof(frameBuf_));
-  std::memset(frameOutBuf_, 0, sizeof(frameOutBuf_));
+  streamPos_ = 0;
+  pendingModelCount_ = 0;
+  pendingHostCount_ = 0;
+  silentFrames_ = 0;
+  gatedFrames_ = 0;
+  std::fill(frameBuf_.begin(), frameBuf_.end(), 0.0f);
+  std::fill(frameOutBuf_.begin(), frameOutBuf_.end(), 0.0f);
   std::memset(inScratch_, 0, sizeof(inScratch_));
   std::memset(wetScratch_, 0, sizeof(wetScratch_));
-  std::memset(outScratch_, 0, sizeof(outScratch_));
   std::memset(pendingModel_, 0, sizeof(pendingModel_));
   std::memset(pendingHost_, 0, sizeof(pendingHost_));
   std::memset(humS1_, 0, sizeof(humS1_));
   std::memset(humS2_, 0, sizeof(humS2_));
-  pendingModelCount_ = 0;
-  pendingHostCount_ = 0;
 }
 
-void DenoiserEngine::setSmoothing(float s) {
-  smoothing_ = s;
-  float smooth = 0.7f * s;
-  float alpha = 0.8f * s;
-  debugLog("slider=%.2f -> smooth=%.3f alpha=%.3f\n", s, smooth, alpha);
-  if (rnnoise_ != nullptr) {
-    rnnoise_set_gain_smoothing(rnnoise_, smooth);
-    rnnoise_set_alpha(rnnoise_, alpha);
+bool DenoiserEngine::init(double hostSampleRate, const std::string& modelDir, int modelIndex) {
+  // The worker (if running) touches the rings rebuilt below; stop it.
+  // Callers that want async (the plugin) restart it after init.
+  stopWorker();
+  hostRate_ = hostSampleRate > 0.0 ? hostSampleRate : 48000.0;
+  modelDir_ = modelDir;
+  if (modelIndex >= 0 && modelIndex < kModelCount)
+    modelIndex_ = modelIndex;
+  rebuildHumFilters();  // coefficients depend on host rate
+
+  delete inRing_;
+  delete outRing_;
+  inRing_ = new RingBuffer(16384);
+  outRing_ = new RingBuffer(16384);
+
+  if (resIn_ != nullptr)
+    speex_resampler_destroy(resIn_);
+  if (resOut_ != nullptr)
+    speex_resampler_destroy(resOut_);
+  int err = 0;
+  resIn_ = speex_resampler_init(1, static_cast<spx_uint32_t>(hostRate_), kModelRate, 5, &err);
+  resOut_ = speex_resampler_init(1, kModelRate, static_cast<spx_uint32_t>(hostRate_), 5, &err);
+
+  // Pipeline delay from the measured per-model table. This is the value
+  // latencySamples() reports, so the host's delay compensation matches
+  // the observed wet-path peak (verified by the impulse unit test).
+  latency48k_ = kModelLatency48k[modelIndex_];
+  dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
+  wetStart_ = static_cast<uint32_t>(std::round(kWetStart48k * hostRate_ / 48000.0));
+
+  bool ok = false;
+  if (!modelDir_.empty())
+    ok = loadModelFile(modelDir_ + "/" + modelFileName(modelIndex_));
+  initialized_ = true;
+  clearPipeline();
+  return ok;
+}
+
+void DenoiserEngine::reset() {
+  // Reload the current model to clear the DF state's internal history
+  // (STFT + lookahead buffers), then clear the pipeline. A failed reload
+  // keeps the previous state. The worker stops across the reload and
+  // restarts if it was up; the swap + clearPipeline run under the
+  // exclusive lock so neither the audio thread nor the worker can be
+  // touching the swapped/reset state (see stateMutex_ protocol).
+  const bool wasRunning = workerRunning_.load();
+  stopWorker();
+  DFState* next = nullptr;
+  size_t fl = 0;
+  if (initialized_ && !modelDir_.empty())
+    next = createModelState(modelDir_ + "/" + modelFileName(modelIndex_), fl);
+  stateMutex_.lock();
+  if (next != nullptr) {
+    if (dfState_ != nullptr)
+      df_free(dfState_);
+    dfState_ = next;
+    df_set_post_filter_beta(dfState_, postFilterBeta_);
+    df_set_atten_lim(dfState_, attenLimDb_);
+    frameLen_ = static_cast<uint32_t>(fl);
+    frameBuf_.assign(frameLen_, 0.0f);
+    frameOutBuf_.assign(frameLen_, 0.0f);
+  }
+  clearPipeline();
+  stateMutex_.unlock();
+  if (wasRunning)
+    startWorker();
+}
+
+bool DenoiserEngine::setModel(int index) {
+  if (index < 0 || index >= kModelCount)
+    return false;
+  if (!initialized_) {
+    // Not init()'d yet (plugin constructed but not activated): just
+    // record the selection; activate() loads it.
+    modelIndex_ = index;
+    return true;
+  }
+  if (modelDir_.empty())
+    return false;
+  // The worker touches dfState_: stop it across the load, and restart
+  // it if it was up -- including on load failure, where the previous
+  // state is preserved. The slow load runs OUTSIDE the lock: the audio
+  // thread keeps running the old model (sync fallback) on valid,
+  // untouched state. Only the fast swap + clearPipeline run under the
+  // exclusive lock (see stateMutex_ protocol): stopping the worker
+  // alone does NOT make the swap safe, because the audio thread's
+  // sync fallback can be inside df_process_frame while the UI thread
+  // frees dfState_ -- that race crashed a probe in tract.
+  const bool wasRunning = workerRunning_.load();
+  stopWorker();
+  size_t fl = 0;
+  DFState* next = createModelState(modelDir_ + "/" + modelFileName(index), fl);
+  if (next == nullptr) {
+    if (wasRunning)
+      startWorker();
+    return false;  // keeps the current model
+  }
+  stateMutex_.lock();
+  if (dfState_ != nullptr)
+    df_free(dfState_);
+  dfState_ = next;
+  df_set_post_filter_beta(dfState_, postFilterBeta_);
+  df_set_atten_lim(dfState_, attenLimDb_);
+  frameLen_ = static_cast<uint32_t>(fl);
+  frameBuf_.assign(frameLen_, 0.0f);
+  frameOutBuf_.assign(frameLen_, 0.0f);
+  modelIndex_ = index;
+  latency48k_ = kModelLatency48k[index];
+  dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
+  clearPipeline();
+  stateMutex_.unlock();
+  if (wasRunning)
+    startWorker();
+  return true;
+}
+
+// One DF frame: pop a frame from the input ring, run it, push exactly
+// one frame's worth of output to the output ring.
+//   NOTE (Nov 1, 2026): this used to skip inference entirely when
+// bypass had settled (bypassed_ && mix_ == 0 && !deltaMonitor_),
+// on the theory that wet multiplied by zero is pure waste and the
+// stream would restart cleanly because the model's delay is
+// lookahead + STFT, not wall-clock time. That theory was WRONG:
+// the gap corrupts DF's internal temporal state, and on un-bypass
+// the wet stream resumes ~70 ms early and stays shifted until the
+// next pipeline reset (a model switch) -- the live bypass echo,
+// reproduced in a stereo probe (see BRANCH-NOTES, Bypass echo fix).
+// So inference now runs unconditionally here; during bypass the
+// render loop discards the wet (mix_ == 0 outputs delayed dry),
+// which costs active CPU while bypassed but keeps DF's state
+// continuous. The silence gate below is different: gated frames
+// push zeros (not nothing) so the wet stream's frame count -- and
+// hence wet/dry alignment -- never shifts.
+//   Silence gate: see the constants in the header.
+void DenoiserEngine::processDfFrame() {
+  const uint32_t popped = inRing_->pop(frameBuf_.data(), frameLen_);
+  if (popped != frameLen_)
+    return;  // caller guarantees availability; be safe, not sorry
+  double sumSq = 0.0;
+  for (uint32_t i = 0; i < frameLen_; ++i) {
+    const double x = frameBuf_[i];
+    sumSq += x * x;
+  }
+  const float rms = static_cast<float>(std::sqrt(sumSq / frameLen_));
+  if (rms < kSilentGateRms && silentFrames_ >= kSilentGateDelayFrames) {
+    std::fill(frameOutBuf_.begin(), frameOutBuf_.end(), 0.0f);
+    outRing_->push(frameOutBuf_.data(), frameLen_);
+    ++gatedFrames_;
+    return;
+  }
+  df_process_frame(dfState_, frameBuf_.data(), frameOutBuf_.data());
+  outRing_->push(frameOutBuf_.data(), frameLen_);
+  if (rms < kSilentGateRms)
+    ++silentFrames_;
+  else
+    silentFrames_ = 0;
+}
+
+void DenoiserEngine::setPostFilterBeta(float beta) {
+  postFilterBeta_ = beta;
+  if (workerRunning_.load()) {
+    // The worker owns dfState_ while it runs: defer, never touch it
+    // from here (a setter from automation must never race inference).
+    // The worker applies pending values at the top of its loop.
+    pendingBeta_.store(beta);
+    betaDirty_.store(true);
+    return;
+  }
+  if (dfState_ != nullptr) {
+    // Direct apply only happens with the worker down -- but the audio
+    // thread's sync fallback may still be inferring, so take shared.
+    stateMutex_.lock_shared();
+    if (dfState_ != nullptr)
+      df_set_post_filter_beta(dfState_, beta);
+    stateMutex_.unlock_shared();
   }
 }
 
-
-
-void DenoiserEngine::setBandFloor(float lowDb, float midDb, float highDb) {
-  bandFloorLowDb_ = lowDb;
-  bandFloorMidDb_ = midDb;
-  bandFloorHighDb_ = highDb;
-  if (rnnoise_ != nullptr)
-    rnnoise_set_band_floor(rnnoise_, lowDb, midDb, highDb);
-}
-
-void DenoiserEngine::setVadAdapt(float adapt) {
-  vadAdapt_ = adapt;
-  if (rnnoise_ != nullptr)
-    rnnoise_set_vad_adapt(rnnoise_, adapt);
+void DenoiserEngine::setAttenLim(float db) {
+  attenLimDb_ = db;
+  if (workerRunning_.load()) {
+    pendingAtten_.store(db);
+    attenDirty_.store(true);
+    return;
+  }
+  if (dfState_ != nullptr) {
+    // See setPostFilterBeta: shared, because the audio thread's sync
+    // fallback may be inferring on dfState_ right now.
+    stateMutex_.lock_shared();
+    if (dfState_ != nullptr)
+      df_set_atten_lim(dfState_, db);
+    stateMutex_.unlock_shared();
+  }
 }
 
 void DenoiserEngine::setDeltaMonitor(bool enable) {
@@ -253,12 +466,47 @@ void DenoiserEngine::rebuildHumFilters() {
 void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   if (in == nullptr || out == nullptr || frames == 0)
     return;
-  if (inRing_ == nullptr || outRing_ == nullptr || resIn_ == nullptr || resOut_ == nullptr || rnnoise_ == nullptr)
-    init(hostRate_);
+  // try_lock_shared: never block the audio thread. If a model switch
+  // holds the exclusive lock, this block passes audio through
+  // untouched; the post-switch pipeline reset realigns everything, so
+  // the skipped block leaves no offset behind. The large-block split
+  // runs under the single shared hold (processInternal per chunk, not
+  // process -- shared_mutex is not recursive).
+  if (!stateMutex_.try_lock_shared()) {
+    for (uint32_t i = 0; i < frames; ++i)
+      out[i] = in[i];
+    return;
+  }
+  // Very large blocks would overflow the fixed scratch buffers: split
+  // them into scratch-sized chunks (identical to the host calling with
+  // smaller blocks, which this engine is invariant to -- see the
+  // block-invariance unit test).
+  if (frames > kScratchSamples) {
+    uint32_t done = 0;
+    while (done < frames) {
+      const uint32_t n = std::min(kScratchSamples, frames - done);
+      processInternal(in + done, out + done, n);
+      done += n;
+    }
+  } else {
+    processInternal(in, out, frames);
+  }
+  stateMutex_.unlock_shared();
+}
+
+void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frames) {
+  if (!initialized_) {
+    // Never init()'d (e.g. plugin constructed but not activated):
+    // true passthrough. No model load is attempted from the audio
+    // thread -- and, importantly, not during TTL generation either,
+    // which instantiates the plugin without activating it.
+    for (uint32_t i = 0; i < frames; ++i)
+      out[i] = in[i];
+    return;
+  }
 
   std::fill(inScratch_, inScratch_ + kScratchSamples, 0.0f);
   std::fill(wetScratch_, wetScratch_ + kScratchSamples, 0.0f);
-  std::fill(outScratch_, outScratch_ + kScratchSamples, 0.0f);
 
   // Module 1: hum notch. Host rate, whole input, before the dry/wet split:
   // both the delay-line dry and the denoised wet are hum-free, so middle
@@ -280,8 +528,8 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     sig = humScratch_;
   }
 
-  // Feed the dry delay line every block (even while priming) so it holds
-  // real audio history by the time the wet path starts.
+  // Feed the dry delay line every block (even before wet starts) so it
+  // holds real audio history by the time the wet path starts.
   {
     const uint32_t dsize = static_cast<uint32_t>(dryDelay_.size());
     for (uint32_t i = 0; i < frames; ++i) {
@@ -294,12 +542,17 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   for (uint32_t i = 0; i < frames; ++i)
     inScratch_[i] = sig[i] * inTrim_;
 
+  // Resample host rate -> 48 kHz model rate, into the input ring.
   spx_uint32_t inLen = frames;
   spx_uint32_t modelLen = static_cast<spx_uint32_t>(std::ceil(static_cast<double>(frames) * (kModelRate / hostRate_)) + 8.0);
   if (modelLen > kScratchSamples)
     modelLen = kScratchSamples;
-
   speex_resampler_process_float(resIn_, 0, inScratch_, &inLen, wetScratch_, &modelLen);
+  // A failed push (async mode only, worker stalled long enough to fill
+  // the 16384-sample input ring) drops this block's model samples:
+  // the DF stream gets a gap, and the render loop covers it with
+  // delayed dry. Degraded, never corrupt. In sync mode the ring is a
+  // bounded sawtooth (0..frameLen_) and the push cannot fail.
   if (modelLen > 0)
     inRing_->push(wetScratch_, modelLen);
 
@@ -387,7 +640,12 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
     pendingModelCount_ -= usedModel;
   }
 
-  // Smoothed wet/dry mix (~10 ms time constant -- no zipper noise on moves).
+  // Single per-sample render loop, gated on absolute stream position:
+  // before wetStart_ (and whenever wet is unavailable) the output is
+  // delayed dry; from wetStart_ on, wet samples are consumed strictly
+  // in order. Because the gate is absolute, not block-relative, and
+  // consumption subtracts only what was actually popped, the output is
+  // identical for any host block size.
   const float target = bypassed_ ? 0.0f : mixTarget_;
   const float coeff =
       1.0f - std::exp(-1.0f / (0.010f * static_cast<float>(hostRate_)));
@@ -448,10 +706,100 @@ void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
                  (pendingHostCount_ - wetIdx) * sizeof(float));
     pendingHostCount_ -= wetIdx;
   }
+  streamPos_ += frames;
 }
 
 uint32_t DenoiserEngine::latencySamples() const {
-  // The true wet-path latency, measured at init() by calibrateDryDelay().
-  // Report it so the host can delay-compensate the plugin's output.
+  // The wet-path latency from the measured per-model table, scaled to
+  // the host rate. Report it so the host can delay-compensate the
+  // plugin's output. The impulse unit test verifies the reported value
+  // against the observed wet-path peak on every run.
   return dryDelayLen_;
+}
+
+// --- Worker thread (async inference) ---
+
+void DenoiserEngine::startWorker() {
+  // Idempotent test-and-set: a second start while running is a no-op.
+  // The worker idles (5 ms timeout loop) when no model is loaded; a
+  // later setModel restarts it, so a late model load still engages it.
+  if (workerRunning_.exchange(true))
+    return;
+  worker_ = std::thread([this] { workerMain(); });
+}
+
+void DenoiserEngine::stopWorker() {
+  if (!workerRunning_.exchange(false))
+    return;
+  workerCv_.notify_all();
+  if (worker_.joinable())
+    worker_.join();
+}
+
+bool DenoiserEngine::waitWorkerIdle(int timeoutMs) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+  while (true) {
+    // "Idle" means no COMPLETE frame remains for the worker, not an
+    // empty ring: the audio thread pushes ~512 samples per block
+    // while the worker consumes 480-sample frames, so a partial-frame
+    // leftover (< frameLen_) is normal and must not block. (An early
+    // version of this waited for available() == 0 and timed out on
+    // nearly every block -- 5 s each -- because the leftover almost
+    // never hits exactly zero.)
+    if (inRing_ == nullptr || frameLen_ == 0 ||
+        inRing_->available() < frameLen_)
+      return true;
+    if (std::chrono::steady_clock::now() >= deadline)
+      return false;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+void DenoiserEngine::workerMain() {
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lk(workerMutex_);
+      // Wait for a runnable frame (input frame available AND output
+      // room available), for shutdown, or for the 5 ms backstop. The
+      // backstop covers a missed notify: worst case a frame waits an
+      // extra 5 ms, far inside the ~117 ms wetStart slack.
+      workerCv_.wait_for(lk, std::chrono::milliseconds(5), [&] {
+        return !workerRunning_.load() ||
+               (dfState_ != nullptr && frameLen_ > 0 && inRing_ != nullptr &&
+                outRing_ != nullptr && inRing_->available() >= frameLen_ &&
+                outRing_->availableSpace() >= frameLen_);
+      });
+      if (!workerRunning_.load())
+        break;
+    }  // release workerMutex_ BEFORE inference -- never hold it across
+       // df_process_frame, and never hold it together with
+       // stateMutex_ (setModel's stop path must not deadlock).
+    // Shared lock across the param application AND the frame: a model
+    // switch's exclusive lock waits for the frame to finish, so
+    // dfState_ is never freed under a running df_process_frame. The
+    // wait predicate above is only a wakeup hint; the checks here,
+    // under shared, are authoritative.
+    stateMutex_.lock_shared();
+    if (!workerRunning_.load()) {
+      stateMutex_.unlock_shared();
+      break;
+    }
+    // Apply deferred DF params (see setPostFilterBeta/setAttenLim).
+    if (betaDirty_.exchange(false) && dfState_ != nullptr)
+      df_set_post_filter_beta(dfState_, pendingBeta_.load());
+    if (attenDirty_.exchange(false) && dfState_ != nullptr)
+      df_set_atten_lim(dfState_, pendingAtten_.load());
+    if (dfState_ == nullptr || frameLen_ == 0 || inRing_ == nullptr ||
+        outRing_ == nullptr || inRing_->available() < frameLen_ ||
+        outRing_->availableSpace() < frameLen_) {
+      stateMutex_.unlock_shared();
+      continue;  // spurious wakeup or a race with the audio thread
+    }
+    processDfFrame();
+    ++workerFrames_;
+    stateMutex_.unlock_shared();
+    // No notify back: the audio thread never sleeps on the worker; it
+    // polls outRing every block.
+  }
 }

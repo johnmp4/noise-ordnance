@@ -1,14 +1,23 @@
 #!/usr/bin/env bash
 # Copyright (c) 2026 John Peterman
 # SPDX-License-Identifier: MIT
-# Noise Ordnance — third-party dependency installer.
+# Noise Ordnance — third-party dependency installer (DeepFilterNet
+# engine branch).
 #
-# Downloads and patches:
-#   - RNNoise (xiph/rnnoise) + Noise Ordnance patch (attenuation floor + gain smoothing)
+# Fetches:
 #   - DPF (DISTRHO Plugin Framework)
+#   - DeepFilterNet (Rikorose/DeepFilterNet, pinned commit below) and
+#     builds libDF as a static library (third_party/build-libdf.sh)
+#   - The two DeepFilterNet model tarballs
+#     (third_party/download-models.sh) -- models are NOT in git
 #
 # SpeexDSP is expected from the system (pkg-config speexdsp).
 #   Ubuntu/Debian: sudo apt install libspeexdsp-dev
+# A Rust toolchain is required for the libDF build. Toolchain policy
+# (deliberate, contributor-facing): nothing is ever installed outside
+# this project tree. An existing cargo on PATH (or in an existing
+# rustup home) is used as-is; otherwise a project-local rustup
+# toolchain is installed under third_party/rust/ (see below).
 #
 # Usage: bash third_party/install-third-party.sh
 # Run from the project root.
@@ -18,44 +27,79 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TP="$ROOT/third_party"
 
-# Pinned rnnoise commit — the Noise Ordnance patch is verified against this.
-# xiph/rnnoise master is essentially frozen (no changes since Feb 2025),
-# so pinning is safe and makes patching deterministic.
-RNNOISE_PIN="70f1d256acd4b34a572f999a05c87bf00b67730d"
+# Pinned DeepFilterNet commit -- main at d375b2d (Oct 2024, the current
+# main tip). The C API (libDF/src/capi.rs) this branch's dsp/df.h was
+# written against, and the models/ tree the download script fetches
+# from. Pinning keeps the build deterministic; bump it deliberately
+# (and re-check capi.rs + re-measure latencies) if you move it.
+#
+# Pin history: this branch briefly tried v0.5.6 (tract 0.19.16) hoping
+# it would load DeepFilterNet2, but DF2 fails to load under BOTH
+# versions (tract reshape lowering panics; see BRANCH-NOTES.md), so
+# there is no reason to carry v0.5.6's older tree: main builds on
+# current stable Rust, declares the staticlib crate-type already, and
+# gives identical DF3/DF3_ll behavior (same measured latencies).
+DF_PIN="d375b2d8309e0935d165700c91da9de862a99c31"
 
 echo "=== Noise Ordnance: installing third-party dependencies ==="
 
-# --- RNNoise ---
-if [ -d "$TP/rnnoise/.git" ]; then
-  echo "--- rnnoise: already cloned, resetting to pinned commit ---"
-  (cd "$TP/rnnoise" && git fetch origin && git reset --hard "$RNNOISE_PIN")
+# --- Rust toolchain (required for the libDF build) ---
+# Toolchain policy (deliberate, contributor-facing): nothing is ever
+# installed outside this project tree. If cargo is already available
+# (PATH, or an existing rustup home), it is used as-is. Otherwise a
+# project-local rustup toolchain is installed under third_party/rust/
+# with --no-modify-path, so no shell profile is touched and nothing
+# lands in $HOME. The install is announced loudly below but needs no
+# prompt: like the DPF clone and model downloads, it only writes
+# inside this project. --profile minimal keeps it to rustc/cargo/std.
+# The post-install check catches a failed download (curl | sh without
+# pipefail can otherwise look successful) and aborts before anything
+# else is fetched.
+RUST_DIR="$TP/rust"
+if ! command -v cargo >/dev/null 2>&1; then
+  if [[ -x "${CARGO_HOME:-$HOME/.cargo}/bin/cargo" ]]; then
+    echo "--- cargo found at ${CARGO_HOME:-$HOME/.cargo}/bin, adding to PATH ---"
+    export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
+  elif [[ -x "$RUST_DIR/cargo/bin/cargo" ]]; then
+    echo "--- cargo found at project-local $RUST_DIR/cargo/bin, adding to PATH ---"
+    export PATH="$RUST_DIR/cargo/bin:$PATH"
+    export CARGO_HOME="$RUST_DIR/cargo" RUSTUP_HOME="$RUST_DIR/rustup"
+  else
+    echo "--- Rust toolchain not found; installing project-local rustup ---"
+    echo "  location: $RUST_DIR (inside this project, gitignored)"
+    echo "  no shell profile changes, nothing installed in \$HOME"
+    echo "  profile: minimal (rustc/cargo/std), downloads a few hundred MB"
+    export CARGO_HOME="$RUST_DIR/cargo" RUSTUP_HOME="$RUST_DIR/rustup"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --profile minimal
+    # The installer does not touch PATH (--no-modify-path), so add the
+    # project-local bin dir explicitly -- otherwise the check below
+    # fails even though the toolchain just installed successfully.
+    export PATH="$RUST_DIR/cargo/bin:$PATH"
+  fi
+fi
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "FAIL: cargo still not available after rustup install attempt."
+  echo "  Run third_party/install-third-party.sh again, or install Rust"
+  echo "  manually and make sure cargo is on PATH."
+  exit 1
+fi
+
+# --- DeepFilterNet ---
+if [ -d "$TP/deepfilternet/.git" ]; then
+  echo "--- deepfilternet: already cloned, resetting to pinned commit ---"
+  (cd "$TP/deepfilternet" && git fetch origin && git reset --hard "$DF_PIN")
 else
-  echo "--- rnnoise: cloning xiph/rnnoise ---"
-  rm -rf "$TP/rnnoise"
-  git clone https://github.com/xiph/rnnoise.git "$TP/rnnoise"
-  (cd "$TP/rnnoise" && git reset --hard "$RNNOISE_PIN")
+  echo "--- deepfilternet: cloning Rikorose/DeepFilterNet ---"
+  rm -rf "$TP/deepfilternet"
+  git clone https://github.com/Rikorose/DeepFilterNet.git "$TP/deepfilternet"
+  (cd "$TP/deepfilternet" && git reset --hard "$DF_PIN")
 fi
 
-echo "--- rnnoise: downloading model data ---"
-(cd "$TP/rnnoise" && bash download_model.sh)
-# Extract the model C files (rnnoise_data.c/h) into src/
-model_tar=$(ls "$TP/rnnoise"/rnnoise_data-*.tar.gz 2>/dev/null | head -1)
-if [ -n "$model_tar" ]; then
-  tar -xzf "$model_tar" -C "$TP/rnnoise/src/" --strip-components=1 2>/dev/null || \
-  tar -xzf "$model_tar" -C "$TP/rnnoise/src/" 2>/dev/null || \
-  echo "  (could not extract model tarball - check manually)"
-fi
+echo "--- deepfilternet: building libDF static library ---"
+bash "$TP/build-libdf.sh"
 
-echo "--- rnnoise: applying Noise Ordnance patch (attenuation floor + gain smoothing + alpha + band floor + VAD adapt) ---"
-(cd "$TP/rnnoise" && \
-  patch -p1 --forward < "$TP/rnnoise-noise-ordnance.patch" || \
-  echo "  (patch already applied or failed - check manually)")
-
-# Remove dev/training tools that break wildcard builds
-rm -f "$TP/rnnoise/src/dump_features.c" \
-      "$TP/rnnoise/src/dump_rnnoise_tables.c" \
-      "$TP/rnnoise/src/write_weights.c" \
-      "$TP/rnnoise/src/rnnoise_data_little.c"
+echo "--- deepfilternet: downloading model files ---"
+bash "$TP/download-models.sh"
 
 # --- DPF ---
 if [ -d "$TP/dpf/.git" ]; then
@@ -79,9 +123,7 @@ fi
 
 echo ""
 echo "=== Done ==="
-echo "RNNoise: $TP/rnnoise (patched)"
-echo "DPF:     $TP/dpf"
-echo ""
-echo "If the rnnoise patch reported failures, check the .rej files in"
-echo "$TP/rnnoise/src/ -- the tree is pinned to a known-good commit,"
-echo "so failures would indicate a local modification."
+echo "DeepFilterNet: $TP/deepfilternet (pinned $DF_PIN)"
+echo "libDF:         $TP/deepfilternet/target/release/libdf.a"
+echo "Models:        $TP/models/"
+echo "DPF:           $TP/dpf"

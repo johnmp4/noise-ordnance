@@ -22,8 +22,17 @@ int main() {
   const uint32_t rate = 48000;
   const std::vector<float> sig = makeNoise(rate * 5, 999);
 
+  const std::string md = modelDir();
+  if (md.empty()) {
+    std::printf("FAIL bypass: NOISE_ORDNANCE_MODEL_DIR not set (a missing "
+                "model must not silently pass as dry audio)\n");
+    return 1;
+  }
   DenoiserEngine engine;
-  engine.init(rate);
+  if (!engine.init(rate, md, modelIndex()) || !engine.modelLoaded()) {
+    std::printf("FAIL bypass: model did not load from %s\n", md.c_str());
+    return 1;
+  }
   engine.setBypassed(true);
   std::vector<float> out;
   runEngine(engine, sig, out, 256);

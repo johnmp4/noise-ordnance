@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Engine unit test: silence in -> silence out, no NaNs.
-// RNNoise's silence path plus the engine's dry/wet mix must not invent
+// DeepFilterNet on silence plus the engine's dry/wet mix must not invent
 // signal: 5 seconds of digital silence through default settings must come
 // out silent (and finite -- a NaN anywhere fails, even if it averages out).
 #include <cstdio>
@@ -15,8 +15,17 @@ int main() {
   const uint32_t rate = 48000;
   const std::vector<float> in(rate * 5, 0.0f);
 
+  const std::string md = modelDir();
+  if (md.empty()) {
+    std::printf("FAIL silence: NOISE_ORDNANCE_MODEL_DIR not set (a missing "
+                "model must not silently pass as dry audio)\n");
+    return 1;
+  }
   DenoiserEngine engine;
-  engine.init(rate);
+  if (!engine.init(rate, md, modelIndex()) || !engine.modelLoaded()) {
+    std::printf("FAIL silence: model did not load from %s\n", md.c_str());
+    return 1;
+  }
   std::vector<float> out;
   runEngine(engine, in, out, 512);
 
