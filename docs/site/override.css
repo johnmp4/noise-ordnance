@@ -1,0 +1,77 @@
+/* Radar theme v3: phosphor colors, a corrected scope, and a faint
+   static topo PAGE background. The topo sits behind the whole page
+   (not inside the scope); the scope stays in the header. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: url(topo.jpg) center / cover no-repeat;
+  opacity: .5;
+  pointer-events: none;
+  z-index: -1;
+}
+/* Scanlines: CRT layer over everything, clicks pass through. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,.28) 0 1px, transparent 1px 3px);
+  pointer-events: none;
+  z-index: 9999;
+}
+.faceplate {
+  position: relative;
+  overflow: hidden;
+}
+.faceplate::before {
+  content: "";
+  position: absolute;
+  right: -40px; top: 50%;
+  width: 220px; height: 220px;
+  border-radius: 50%;
+  /* Bright leading edge forward, fading trail behind (echoes). */
+  background: conic-gradient(from 0deg, transparent 0deg 290deg, rgba(74,222,128,.30) 355deg, rgba(74,222,128,.85) 360deg);
+  animation: radar-sweep 6s linear infinite;
+  opacity: .45;
+  pointer-events: none;
+}
+.faceplate::after {
+  content: "";
+  position: absolute;
+  right: -40px; top: 50%;
+  width: 220px; height: 220px;
+  transform: translateY(-50%);
+  border-radius: 50%;
+  border: 1px solid rgba(74,222,128,.4);
+  background:
+    radial-gradient(circle at 62% 38%, rgba(74,222,128,.9) 0 2px, rgba(74,222,128,.3) 2px 5px, transparent 6px),
+    radial-gradient(circle at 34% 66%, rgba(74,222,128,.8) 0 2px, rgba(74,222,128,.25) 2px 4px, transparent 5px),
+    repeating-radial-gradient(circle at center, transparent 0 26px, rgba(74,222,128,.25) 26px 27px);
+  opacity: .5;
+  pointer-events: none;
+}
+@keyframes radar-sweep {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to { transform: translateY(-50%) rotate(360deg); }
+}
+h1, .stat .num {
+  text-shadow: 0 0 12px rgba(74,222,128,.45);
+}
+.slot {
+  background: linear-gradient(#0f2413, #081208);
+}
+.slot[aria-current="page"] .led {
+  box-shadow: 0 0 12px var(--led);
+}
+.wave {
+  background: repeating-linear-gradient(90deg, #2a5a30 0 2px, transparent 2px 7px);
+}
+.links a:hover {
+  border-color: var(--amber);
+  box-shadow: 0 0 10px rgba(74,222,128,.35);
+}
+@media (max-width: 640px) {
+  .faceplate::before, .faceplate::after {
+    display: none;
+  }
+}
