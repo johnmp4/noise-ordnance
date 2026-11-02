@@ -31,10 +31,11 @@ exactly what's being removed.
 Built on [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet),
 with DF3 as the default model and DF3_ll on a Low Latency Model
 switch. A traditional notch-filter bank handles mains hum ahead of
-the model. Latency is about 100 ms (5616 samples DF3, 4656 DF3_ll
-at 48 kHz), reported to the host for delay compensation: lookahead
-the model uses to do its best work, on tracks you have already
-recorded.
+the model. Latency is reported to the host for delay compensation:
+5616 samples (117 ms) for DF3, which uses lookahead to do its best
+work, and 4656 samples (97 ms) for the Low Latency Model, which
+drops the lookahead for a 20 ms shorter delay, on tracks you have
+already recorded.
 
 Tune it by ear: enable Delta Monitor, set Aggressiveness to full,
 and listen to what's being removed. Lower Aggressiveness until the
