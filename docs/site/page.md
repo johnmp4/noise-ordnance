@@ -24,17 +24,18 @@ links:
 
 A free, open-source neural denoiser for recorded speech: podcast
 dialogue, voiceover, audiobook narration, video dialogue. On Linux
-(LV2) and anywhere VST3 runs. Instead of a black box, you get ten
+(LV2 and VST3) and Windows (VST3). Instead of a black box, you get ten
 controls over how hard it works, and a monitor that lets you hear
 exactly what's being removed.
 
 Built on [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet),
 with DF3 as the default model and DF3_ll on a Low Latency Model
 switch. A traditional notch-filter bank handles mains hum ahead of
-the model. Latency is about 100 ms (5616 samples DF3, 4656 DF3_ll
-at 48 kHz), reported to the host for delay compensation, so this is
-a plugin for tracks you have already recorded, not for monitoring
-yourself live.
+the model. Latency is reported to the host for delay compensation:
+5616 samples (117 ms) for DF3, which uses lookahead to do its best
+work, and 4656 samples (97 ms) for the Low Latency Model, which
+drops the lookahead for a 20 ms shorter delay, on tracks you have
+already recorded.
 
 Tune it by ear: enable Delta Monitor, set Aggressiveness to full,
 and listen to what's being removed. Lower Aggressiveness until the
@@ -54,13 +55,6 @@ voice in the delta is faint. That's your sweet spot.
 
 Same noisy clip, raw and through Noise Ordnance at default settings.
 
-<!-- PLACEHOLDER: audio files pending Jay's follow-up commit (cleaned-up
-     combo drill file + his before/after export). Filenames below are
-     provisional. The srcs point at the tests directory by relative
-     path; the site build currently copies only top-level media from
-     the page's own directory, so at go-live either the build needs a
-     relative-path rule or the audio gets copied into the page dir.
-     Decision deferred. -->
 <audio controls>
   <source src="../../tests/drills/paint-drying-combo.wav" type="audio/wav">
   Before: raw noisy clip.
@@ -73,13 +67,12 @@ Same noisy clip, raw and through Noise Ordnance at default settings.
 ## Who it's for
 
 - Podcast, voiceover, audiobook: recorded tracks, where latency is irrelevant and one instance on a desktop is nothing.
-- Video dialogue: location audio cleanup in Ardour, REAPER, Audacity 4, and VST3 editors on Windows and macOS.
+- Video dialogue: location audio cleanup in Ardour, REAPER, Audacity 4, and VST3 editors on Linux and Windows.
 - Streamers with a DAW chain: mic through Ardour or REAPER into OBS, where the built-in suppression isn't enough for heavy or non-stationary noise.
-- Not for: live monitoring, in-ear, front of house. About 100 ms rules those out, plainly.
 
 ## Under the hood
 
 - Open source, MIT. Source, releases, and issues are linked below.
 - Runs at 128-sample blocks in Ardour and Carla: inference lives on a worker thread, so the audio thread stays clear of the model's deadline.
 - Tested, not just built: the unit suite covers block-size invariance, exact latency, model-switch races, and bypass alignment, and the drill suite gates hiss and hum on real speech, not tones.
-- Install today is a source build: a Rust toolchain plus model downloads (DF3 8 MB, DF3_ll 36 MB). Prebuilt bundles are the next packaging step, not yet shipped.
+- Install today is a source build. Packaged releases for Linux and Windows are on the way.
