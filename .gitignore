@@ -13,6 +13,7 @@ bin/
 tests/build/
 tests/drills/*.wav
 !tests/drills/paint-drying-clean.wav
+!tests/drills/paint-drying-combo.wav
 # Drill run outputs (run_drills.sh writes denoised WAVs + measure logs
 # here; all regenerable from the clean drill, never committed).
 tests/drills/out/
