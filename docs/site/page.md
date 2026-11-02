@@ -24,7 +24,7 @@ links:
 
 A free, open-source neural denoiser for recorded speech: podcast
 dialogue, voiceover, audiobook narration, video dialogue. On Linux
-(LV2) and anywhere VST3 runs. Instead of a black box, you get ten
+(LV2 and VST3) and Windows (VST3). Instead of a black box, you get ten
 controls over how hard it works, and a monitor that lets you hear
 exactly what's being removed.
 
@@ -66,7 +66,7 @@ Same noisy clip, raw and through Noise Ordnance at default settings.
 ## Who it's for
 
 - Podcast, voiceover, audiobook: recorded tracks, where latency is irrelevant and one instance on a desktop is nothing.
-- Video dialogue: location audio cleanup in Ardour, REAPER, Audacity 4, and VST3 editors on Windows and macOS.
+- Video dialogue: location audio cleanup in Ardour, REAPER, Audacity 4, and VST3 editors on Linux and Windows.
 - Streamers with a DAW chain: mic through Ardour or REAPER into OBS, where the built-in suppression isn't enough for heavy or non-stationary noise.
 
 ## Under the hood
@@ -74,4 +74,4 @@ Same noisy clip, raw and through Noise Ordnance at default settings.
 - Open source, MIT. Source, releases, and issues are linked below.
 - Runs at 128-sample blocks in Ardour and Carla: inference lives on a worker thread, so the audio thread stays clear of the model's deadline.
 - Tested, not just built: the unit suite covers block-size invariance, exact latency, model-switch races, and bypass alignment, and the drill suite gates hiss and hum on real speech, not tones.
-- Install today is a source build: a Rust toolchain plus model downloads (DF3 8 MB, DF3_ll 36 MB). Prebuilt bundles are the next packaging step.
+- Install today is a source build. Packaged releases for Linux and Windows are on the way.
