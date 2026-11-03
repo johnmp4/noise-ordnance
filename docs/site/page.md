@@ -53,12 +53,17 @@ voice in the delta is faint. That's your sweet spot.
 
 ## Before / after
 
-Same noisy clip, raw and through Noise Ordnance, dialed in for this voice.
+The same recorded speech clip, with hiss and mains hum — first raw, then through Noise Ordnance, dialed in for this voice.
+
+**Before: raw clip, hiss and hum untouched.**
 
 <audio controls>
   <source src="../../tests/drills/paint-drying-combo.wav" type="audio/wav">
   Before: raw noisy clip.
 </audio>
+
+**After: the same clip through Noise Ordnance.**
+
 <audio controls>
   <source src="./paint-drying-combo-denoised.wav" type="audio/wav">
   After: through Noise Ordnance.

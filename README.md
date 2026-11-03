@@ -110,10 +110,6 @@ Only the clean speech file ships in the repo; the noisy variants are derived loc
 
 Do not test the model with synthetic tones: DeepFilterNet is a speech model, so a sine measures nothing meaningful. Tones belong in unit tests of the hum filter alone, with the model out of the path.
 
-## Roadmap
-
-- **GUI / commercial version:** when someone asks. The open LV2 is the product for now.
-
 ## Contributing
 
 Bug reports and pull requests are welcome — please open an issue first for anything bigger than a typo so the approach can be agreed on. Run the drill suite (`tests/run_drills.sh`) before submitting DSP changes.
