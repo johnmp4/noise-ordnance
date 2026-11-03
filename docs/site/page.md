@@ -53,7 +53,7 @@ voice in the delta is faint. That's your sweet spot.
 
 ## Before / after
 
-Same noisy clip, raw and through Noise Ordnance at default settings.
+Same noisy clip, raw and through Noise Ordnance, dialed in for this voice.
 
 <audio controls>
   <source src="../../tests/drills/paint-drying-combo.wav" type="audio/wav">
