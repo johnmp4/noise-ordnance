@@ -11,6 +11,22 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 
 **What it is not:** a live instrument effect. The model works in 10 ms frames at 48 kHz, and the engine's wet-start prefix plus STFT + lookahead bring the measured total latency to 117 ms (DeepFilterNet3) or 97 ms (DeepFilterNet3 Low Latency) at 48 kHz — see "Measured performance" below for the per-model numbers and how they were measured. Latency is reported to the host for delay compensation — don't monitor through it.
 
+## Install
+
+Today, install is a source build. Packaged releases for Linux and Windows are on the way.
+
+Prerequisites: a C++17 toolchain, `make`, `pkg-config`, `git`, `python3`, and SpeexDSP (`libspeexdsp-dev` on Debian/Ubuntu). The install script sets up a project-local Rust toolchain for you if `cargo` isn't already available.
+
+```bash
+bash third_party/install-third-party.sh   # clones DPF + DeepFilterNet (pinned), builds libDF, downloads models
+make                                      # LV2 + VST3 bundles land in third_party/bin/
+bash build-test-install.sh                # full build + regression tests + install prompt
+```
+
+Load the LV2 or VST3 bundle in your host. Model files are downloaded during the install step and copied into each bundle's `models/` directory — if the plugin loads but does nothing, check that directory first: a bundle without models runs dry passthrough by design.
+
+Tested in Ardour. When rebuilding while an old instance sits on a track: delete the instance first (bypass isn't enough — Ardour holds the old binary in memory), rebuild, reinstall, re-add.
+
 ## The chain
 
 Dual-mono: stereo is two independent engines, one per channel. Each channel runs, in order:
@@ -79,8 +95,6 @@ bash build-test-install.sh                # full build + regression tests + inst
 The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). DeepFilterNet2 is not loadable under this pin or under v0.5.6 (tract cannot lower DF2's graph), which is why only the DF3 models are offered (Low Latency Model switch: off = DF3, on = DF3 Low Latency). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
 
 **Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests.
-
-Tested in Ardour. When rebuilding while an old instance sits on a track: delete the instance first (bypass isn't enough — Ardour holds the old binary in memory), rebuild, reinstall, re-add.
 
 ## Testing
 
