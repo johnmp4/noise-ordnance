@@ -14,7 +14,7 @@ theme_led: #33ff66
 stats:
   - "+53.4 dB | Hiss reduction, gated drill"
   - "+58.7 dB | Combo drill, noisy speech"
-  - "10 | Parameters, each one earning its place"
+  - "+76.5 dB | Hum reduction, gated drill"
 links:
   - "Documentation | https://plugins.johnpeterman.me/noise-ordnance"
   - "Source | https://github.com/johnmp4/noise-ordnance"
