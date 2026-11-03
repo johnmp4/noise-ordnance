@@ -1,7 +1,5 @@
 # Noise Ordnance
 
-Built by **Jay Peterman**.
-
 A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same build). DeepFilterNet kills hiss and broadband noise; a traditional notch cascade handles mains hum. Built for post-production (podcast dialogue, stream VODs, recorded tracks) where you want the noise gone and the voice untouched.
 
 - 📖 **Documentation:** https://plugins.johnpeterman.me/noise-ordnance
@@ -24,8 +22,6 @@ bash build-test-install.sh                # full build + regression tests + inst
 ```
 
 Load the LV2 or VST3 bundle in your host. Model files are downloaded during the install step and copied into each bundle's `models/` directory — if the plugin loads but does nothing, check that directory first: a bundle without models runs dry passthrough by design.
-
-Tested in Ardour. When rebuilding while an old instance sits on a track: delete the instance first (bypass isn't enough — Ardour holds the old binary in memory), rebuild, reinstall, re-add.
 
 ## The chain
 
