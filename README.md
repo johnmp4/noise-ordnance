@@ -108,7 +108,7 @@ Do not test the model with synthetic tones: DeepFilterNet is a speech model, so 
 
 ## Contributing
 
-Bug reports and pull requests are welcome — please open an issue first for anything bigger than a typo so the approach can be agreed on. Run the drill suite (`tests/run_drills.sh`) before submitting DSP changes.
+Bug reports and pull requests are welcome — please open an issue first for anything bigger than a typo so the approach can be agreed on. Before submitting DSP changes, run the drill suite (`tests/run_drills.sh`) and the unit tests (`tests/run-unit-tests.sh`).
 
 ## License
 
