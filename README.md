@@ -9,14 +9,14 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 - 📦 **Releases:** https://github.com/johnmp4/noise-ordnance/releases
 - 🐛 **Issues:** https://github.com/johnmp4/noise-ordnance/issues
 
-**What it is not:** a live instrument effect. The model works in 10 ms frames at 48 kHz, and the engine's wet-start prefix plus STFT + lookahead bring the measured total latency to 117 ms (DeepFilterNet3) or 97 ms (DeepFilterNet3 Low Latency) at 48 kHz — see "Measured performance" below and BRANCH-NOTES.md for the per-model numbers and how they were measured. Latency is reported to the host for delay compensation — don't monitor through it.
+**What it is not:** a live instrument effect. The model works in 10 ms frames at 48 kHz, and the engine's wet-start prefix plus STFT + lookahead bring the measured total latency to 117 ms (DeepFilterNet3) or 97 ms (DeepFilterNet3 Low Latency) at 48 kHz — see "Measured performance" below for the per-model numbers and how they were measured. Latency is reported to the host for delay compensation — don't monitor through it.
 
 ## The chain
 
 Dual-mono: stereo is two independent engines, one per channel. Each channel runs, in order:
 
 1. **Hum notch filter** — cascaded biquads at 50 or 60 Hz plus the first four harmonics. Old-school DSP, runs before everything else. Toggleable.
-2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use). DeepFilterNet2 is not offered: both DF2 models abort the host process at load time under libDF's tract backend (see BRANCH-NOTES.md).
+2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use). DeepFilterNet2 is not offered: both DF2 models abort the host process at load time under libDF's tract backend, which cannot lower DF2's graph.
 3. **Post-filter** — DeepFilterNet's perceptual cleanup stage, after the model. The Postfilter Strength knob (0–0.05, default 0.02; 0 = off) sets its strength.
 4. **Aggressiveness** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output: it is the DF-native equivalent of the old attenuation floors, but one global number instead of per-band values. This is the knob that keeps the "metallic" edge out.
 5. **Wet/dry mix** — the Reduction knob, with smoothed transitions so automation doesn't zip.
@@ -29,7 +29,7 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 | 1 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
 | 2 | Hum Filter | on/off | off | The notch cascade |
 | 3 | Hum Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
-| 4 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency |
+| 4 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency; hosts vary in whether they re-compensate mid-session — if a switch sounds misaligned, remove and re-add the instance |
 | 5 | Reduction | 0–100 % | 100 % | Wet/dry mix |
 | 6 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
 | 7 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
@@ -47,9 +47,23 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 
 From the repo's drill suite, real speech + noise recordings, not synth tones (DeepFilterNet is a speech model, so a sine wave measures nothing meaningful):
 
-- DeepFilterNet3 on the hiss+hum combo drill in this branch's suite (default settings, report-only): floor +58.7 dB, speech peaks −0.8 dB — see BRANCH-NOTES.md for the full drill table from this branch's validation run. (Jay's Oct 30 binary run on his own combo file measured peaks −0.2 dB; different file, different harness — both are DF3 numbers.)
-- Engine through the hiss drill: floor reduction and peak figures are in BRANCH-NOTES.md (this branch's validation run; the suite gates are ≥20 dB floor reduction, peaks within ±1 dB, at block sizes 128 and 1024).
-- Engine through the hum drill (hum module on): ≥40 dB floor reduction gate — set so a broken hum module fails.
+### Latency
+
+| Model | Latency @ 48 kHz (samples) | Latency @ 48 kHz (ms) |
+|-------|---------------------------|----------------------|
+| DeepFilterNet3 | 5616 | 117 |
+| DeepFilterNet3 Low Latency | 4656 | 97 |
+
+Measured by speech cross-correlation (`tests/check-latency.py`, confirmed by an in-process unit test that agrees to the sample). Impulse and noise-burst probes do not work for this model: it gates near-silent frames and suppresses stationary noise, so only speech gives a measurable output. Each total is the wet-start prefix (4096 samples) plus chain lag (STFT + lookahead + resamplers); the wet-start prefix also means the first ~85 ms of a stream is dry, by design. Re-measure if the model files change: a new upstream tarball can change a model's internal delay, and a stale table makes the host compensate by the wrong amount.
+
+### Drill results (DeepFilterNet3, default settings)
+
+| Drill | Floor reduction | Speech peaks | Gate |
+|-------|----------------|--------------|------|
+| hiss | +53.4 dB (−45.3 → −98.7) | −0.2 dB | ≥20 dB / ±1 dB: PASS |
+| hum (notch module on, 60 Hz) | +76.5 dB (−41.1 → −117.6) | −0.8 dB | ≥40 dB / ±1 dB: PASS |
+| combo (report-only) | +58.7 dB (−39.7 → −98.4) | −0.8 dB | — |
+| quiet (report-only) | floor to meter bottom (−60.4 → −240.0; effectively digital silence — do not quote +179.6 dB as a real figure) | −43.4 dB (quiet room tone is crushed too — expected at 100% on a speech model) | — |
 - Two-stage practical example (Noise Ordnance + Noise Repellent LV2, RNNoise era): Ordnance run gentle, then Repellent learns a pause. On the hiss+hum combo drill: **+27.5 dB** floor reduction, speech peaks −2.9 dB. Realistic numbers for a full chain tuned by ear, not a maximum-reduction figure. (Pre-DF numbers; re-tune with the DF engine before quoting for it.)
 
 ## Building
@@ -62,7 +76,7 @@ make                                      # LV2 + VST3 bundles land in third_par
 bash build-test-install.sh                # full build + regression tests + install prompt
 ```
 
-The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). DeepFilterNet2 is not loadable under this pin or under v0.5.6 (tract cannot lower DF2's graph — see BRANCH-NOTES.md), which is why only the DF3 models are offered (Low Latency Model switch: off = DF3, on = DF3 Low Latency). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs.
+The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). DeepFilterNet2 is not loadable under this pin or under v0.5.6 (tract cannot lower DF2's graph), which is why only the DF3 models are offered (Low Latency Model switch: off = DF3, on = DF3 Low Latency). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
 
 **Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests.
 
