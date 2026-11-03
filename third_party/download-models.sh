@@ -31,8 +31,8 @@ mkdir -p "$OUT"
 
 # name, expected size in bytes
 # NOTE: DeepFilterNet2 is intentionally NOT listed here — DF2 crashes
-# the host at load under libDF/tract (see BRANCH-NOTES.md), so there
-# is no reason to download its model. (A leftover bare-size entry for
+# the host at load under libDF/tract (tract cannot lower DF2's
+# graph), so there is no reason to download its model. (A leftover bare-size entry for
 # it once made this script 404 on a nonsense filename and abort
 # before fetching the real models; do not re-add it.)
 MODELS=(

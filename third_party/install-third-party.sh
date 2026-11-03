@@ -28,17 +28,17 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TP="$ROOT/third_party"
 
 # Pinned DeepFilterNet commit -- main at d375b2d (Oct 2024, the current
-# main tip). The C API (libDF/src/capi.rs) this branch's dsp/df.h was
+# main tip). The C API (libDF/src/capi.rs) that dsp/df.h was
 # written against, and the models/ tree the download script fetches
 # from. Pinning keeps the build deterministic; bump it deliberately
 # (and re-check capi.rs + re-measure latencies) if you move it.
 #
-# Pin history: this branch briefly tried v0.5.6 (tract 0.19.16) hoping
-# it would load DeepFilterNet2, but DF2 fails to load under BOTH
-# versions (tract reshape lowering panics; see BRANCH-NOTES.md), so
-# there is no reason to carry v0.5.6's older tree: main builds on
-# current stable Rust, declares the staticlib crate-type already, and
-# gives identical DF3/DF3_ll behavior (same measured latencies).
+# Pin history: v0.5.6 (tract 0.19.16) was tried hoping it would load
+# DeepFilterNet2, but DF2 fails to load under BOTH versions (tract
+# reshape lowering panics), so there is no reason to carry v0.5.6's
+# older tree: main builds on current stable Rust, declares the
+# staticlib crate-type already, and gives identical DF3/DF3_ll
+# behavior (same measured latencies).
 DF_PIN="d375b2d8309e0935d165700c91da9de862a99c31"
 
 echo "=== Noise Ordnance: installing third-party dependencies ==="

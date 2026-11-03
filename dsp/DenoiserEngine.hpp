@@ -45,12 +45,16 @@ public:
   // The plugin exposes this as a boolean Low Latency Model switch
   // (OFF = kModelDF3, ON = kModelDF3LL); the harness and unit tests
   // address models by index directly.
+  // It was an enum originally; with only two loadable models the enum
+  // showed up as an unlabeled binary switch in at least one host, so
+  // it is a toggle. If a third loadable model ever appears, this must
+  // become an enum again.
   // NOTE: DeepFilterNet2 is deliberately NOT offered. Both DF2 models
   // (full and _ll) panic inside tract's reshape lowering at load time
   // (df_create aborts the host process) under libDF 0.5.6/tract 0.19.16
   // and main/tract 0.21.4, verified with the repo's own deep-filter
   // binary as well as this engine. A model that aborts the host cannot
-  // be a dropdown entry. See BRANCH-NOTES.md.
+  // be a dropdown entry.
   static constexpr int kModelDF3 = 0;
   static constexpr int kModelDF3LL = 1;
   static constexpr int kModelCount = 2;
