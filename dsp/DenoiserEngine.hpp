@@ -34,7 +34,11 @@ class RingBuffer;
 // (wetStart_), starved samples fall back to delayed dry (never
 // undelayed dry), the wet buffer is topped up eagerly on every call,
 // and consumption subtracts only what was actually popped. That is what
-// makes output bit-identical across host block sizes.
+// makes output bit-identical across host block sizes. (Nov 2, 2026
+// offline-render fix: wetPos_ anchors the wet FIFO to the render
+// position, discarding stale wet after starvation gaps, and the audio
+// thread waits boundedly for worker wet before declaring starvation
+// -- see the async comment below.)
 class DenoiserEngine {
 public:
   // Model selection: index into the model file table (see .cpp).
@@ -119,6 +123,33 @@ public:
   // moment), never a dropout or a crash. start/stop are NOT
   // thread-safe against each other; in practice the host serializes
   // activate/deactivate/setModel/reset/destruction.
+  //
+  // Offline-render fix (Nov 2, 2026): a freewheeling host (Ardour
+  // session export) calls process() as fast as the machine allows,
+  // not in realtime, so the worker cannot run ahead the way it does
+  // live -- it becomes the bottleneck and falls behind. Without a
+  // fix, the render loop then falls back to dry for the gap and
+  // resumes with STALE wet (the FIFO front still belongs to the gap
+  // positions), so every resumed wet frame renders shifted until the
+  // next reset -- varying wet delay on speech, which sounds warbly
+  // and swishy. Two changes, both in processInternal():
+  //   (a) Anchor: wetPos_ tracks the stream position of
+  //   pendingHost_[0]; if the render has advanced past it, the stale
+  //   prefix is discarded before rendering, so resumed wet always
+  //   aligns with the position being rendered now.
+  //   (b) Bounded wait: before declaring starvation, the audio
+  //   thread waits up to kWetWaitMs for the worker to produce the
+  //   needed wet (the worker notifies wetCv_ after every frame). In
+  //   realtime the worker is ahead, so the wait returns immediately
+  //   and behavior is unchanged; in a freewheeling export the wait
+  //   slows rendering to inference speed instead of smearing.
+  //   On timeout the render falls back to delayed dry (never late
+  //   wet), and the anchor discards the stale wet when it arrives.
+  // Residual: a sustained worker stall long enough to overflow the
+  // input ring (16384 samples) drops input frames, which can still
+  // shift wet until reset -- that now needs pathological overload,
+  // not routine freewheeling, because the wait keeps the audio
+  // thread's lead bounded.
   void startWorker();
   void stopWorker();
   // Test/diagnostic use only, never the audio thread: block until the
@@ -142,6 +173,11 @@ private:
   // regardless of host block size -- that is what makes output
   // block-size invariant. If block invariance ever breaks, bump this.
   static constexpr uint32_t kWetStart48k = 4096;
+  // Bounded audio-thread wait for worker wet, per processInternal()
+  // call (see the offline-render comment above). ~20 inference
+  // frames at typical speed: far more than a block ever needs, far
+  // less than the input ring's 341 ms capacity.
+  static constexpr int kWetWaitMs = 50;
 
   static void debugLog(const char* fmt, ...);
   bool loadModelFile(const std::string& path);
@@ -166,6 +202,16 @@ private:
   // calls this per chunk; shared_mutex is not recursive, so the
   // large-block split must not re-enter process()).
   void processInternal(const float* in, float* out, uint32_t frames);
+  // Stage wet for rendering: pop available model-rate wet from
+  // outRing_ into pendingModel_, then resample into pendingHost_.
+  // Called once per processInternal() call, and again inside the
+  // bounded wait loop as the worker produces more wet.
+  void stageWet();
+  // Discard stale wet (see the offline-render comment above):
+  // pendingHost_[0] belongs to wetPos_; if the render has advanced
+  // past it, drop the stale prefix so the front aligns with
+  // streamPos_. No-op when already aligned.
+  void dropStaleWet();
 
   double hostRate_ = 48000.0;
   float reduction_ = 1.0f;
@@ -178,21 +224,24 @@ private:
   float mix_ = 0.0f;
   float mixTarget_ = 1.0f;
   bool bypassed_ = false;
-  // Absolute output position: what decides wet vs dry is the sample
-  // index, never a call boundary. Samples before the fixed wet-start
-  // position are delayed dry (no wet is rendered yet); after that,
-  // mixed. This is what makes output independent of the host's block
-  // size.
-  uint32_t outPos_ = 0;
-  // Fixed absolute output position where wet rendering begins. This is
-  // set once in init() from the pre-calibration latency guess and NEVER
-  // changed by calibrateDryDelay(): the measured latency is gate + chain
-  // lag, so if the gate moved to the measured value after calibration,
-  // the peak would shift by the chain lag again and the reported latency
-  // would never match the observed peak. A fixed gate keeps calibration
-  // and use consistent, and the dry delay (measured latency) keeps dry
-  // and wet sample-aligned in the mix.
+  bool initialized_ = false;
+
+  std::string modelDir_;
+  int modelIndex_ = kModelDF3;
+  uint32_t latency48k_ = 0;  // measured, per model (see .cpp table)
+  uint32_t dryDelayLen_ = 0;
   uint32_t wetStart_ = 0;
+  uint64_t streamPos_ = 0;
+  // Stream position (same coordinates as streamPos_) of
+  // pendingHost_[0]: the output position that the front wet sample
+  // belongs to. Starts at wetStart_ (the first rendered wet
+  // position) and advances by exactly the wet samples consumed or
+  // discarded as stale. If streamPos_ has advanced past wetPos_,
+  // the buffered wet is stale and its prefix is discarded before
+  // rendering (see the offline-render comment above). Reset in
+  // clearPipeline alongside streamPos_.
+  uint64_t wetPos_ = 0;
+
   // Dry-path delay line (compensates wet-path latency so dry/wet mix aligns)
   std::vector<float> dryDelay_;
   uint32_t dryDelayWrite_ = 0;
@@ -263,6 +312,14 @@ private:
   std::thread worker_;
   std::mutex workerMutex_;
   std::condition_variable workerCv_;
+  // Wet-availability signal for the bounded wait: the worker notifies
+  // wetCv_ after every produced frame (and stopWorker notifies on
+  // shutdown). The audio thread waits on it only when wet is short;
+  // the wait releases wetMutex_ while sleeping and never holds it
+  // together with stateMutex_ in a blocking way, so the worker can
+  // always take shared and produce while the audio thread waits.
+  std::mutex wetMutex_;
+  std::condition_variable wetCv_;
   std::atomic<bool> workerRunning_{false};
   std::atomic<float> pendingBeta_{0.02f};
   std::atomic<float> pendingAtten_{100.0f};
