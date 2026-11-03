@@ -59,8 +59,8 @@ const char* kModelNames[DenoiserEngine::kModelCount] = {
 // DeepFilterNet2 is not in this table: it does not load (see
 // DenoiserEngine.hpp), so it has no meaningful latency here.
 const uint32_t kModelLatency48k[DenoiserEngine::kModelCount] = {
-    5616,  // DeepFilterNet3 -- measured by correlation, see BRANCH-NOTES.md
-    4656,  // DeepFilterNet3 Low Latency -- measured by correlation
+    5616,  // DeepFilterNet3 -- measured by speech cross-correlation (tests/check-latency.py)
+    4656,  // DeepFilterNet3 Low Latency -- measured by speech cross-correlation
 };
 
 bool fileExists(const std::string& path) {
@@ -298,7 +298,7 @@ bool DenoiserEngine::setModel(int index) {
 // the gap corrupts DF's internal temporal state, and on un-bypass
 // the wet stream resumes ~70 ms early and stays shifted until the
 // next pipeline reset (a model switch) -- the live bypass echo,
-// reproduced in a stereo probe (see BRANCH-NOTES, Bypass echo fix).
+// reproduced in a stereo probe (see tests/unit/test-bypass-alignment.cpp).
 // So inference now runs unconditionally here; during bypass the
 // render loop discards the wet (mix_ == 0 outputs delayed dry),
 // which costs active CPU while bypassed but keeps DF's state

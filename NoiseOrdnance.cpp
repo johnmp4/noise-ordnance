@@ -218,7 +218,7 @@ public:
     // Model files resolve in this order:
     //   1. $NOISE_ORDNANCE_MODEL_DIR (tests, harness, manual runs)
     //   2. <bundle>/models/ (installed LV2/VST3 bundles; the install
-    //      scripts copy the tarballs there -- see BRANCH-NOTES.md)
+    //      scripts copy the tarballs there)
     // If neither yields a loadable file, the engines run dry
     // passthrough (no crash) until a valid directory appears.
     std::string modelDir;

@@ -19,8 +19,8 @@
 # the Makefile can rely on third_party/deepfilternet/target/release/
 # libdf.a regardless of cargo workspace layout. The `capi` feature also
 # pulls in libDF's embedded default model (~8 MB of bytes the plugin
-# never uses -- models load from files -- see BRANCH-NOTES.md); that is
-# accepted bloat for this branch, not a requirement. (libDF main
+# never uses -- models load from files); that is
+# accepted bloat, not a requirement. (libDF main
 # declares the staticlib crate-type already, so plain `cargo build`
 # produces libdf.a; no tree patching needed.)
 #
