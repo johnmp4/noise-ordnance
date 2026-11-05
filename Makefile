@@ -35,6 +35,21 @@ $(DF_STATICLIB):
 
 SPEEXDSP_CFLAGS := $(shell pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/include")
 SPEEXDSP_LIBS := $(shell pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")
+ifneq ($(WINDOWS),true)
+# Linux only: link speexdsp statically so the release bundle is
+# copy-to-folder with no libspeexdsp1 package needed on the user's
+# system. -Bstatic forces the archive choice (the linker otherwise
+# prefers the .so), so a distro package without a static archive
+# fails the build loudly instead of silently shipping a dynamic
+# dependency. Only speex is wrapped: static glibc libm breaks
+# shared-library links (IFUNC references), and the trailing -lm
+# covers speex's private libm dep dynamically — it must come AFTER
+# speex, since static linking resolves symbols in link order
+# (unlike dynamic linking, which defers them to runtime).
+# Windows is untouched: its build already links speex statically
+# (verified via objdump).
+SPEEXDSP_LIBS := -Wl,-Bstatic -lspeexdsp -Wl,-Bdynamic -lm
+endif
 
 BUILD_C_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
@@ -46,5 +61,15 @@ BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 BUILD_CXX_FLAGS += -std=gnu++17
 # A Rust staticlib needs the pthread/dl libs for std on Linux.
 EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) -lpthread -ldl $(DF_STATICLIB)
+# A Rust staticlib needs these system libs for std on Windows: Winsock
+# (networking), NT native API, BCrypt (randomness) and userenv (user
+# profile directory). They must come after libdf.a in link order, which
+# holds because this appends after the line above.
+ifeq ($(WINDOWS),true)
+EXTRA_DSP_LIBS += -lws2_32 -lntdll -lbcrypt -luserenv
+endif
 
 .PHONY: all
+
+
+
