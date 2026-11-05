@@ -2,9 +2,11 @@
 # Copyright (c) 2026 John Peterman
 # SPDX-License-Identifier: MIT
 # validate-build.sh: run the build plus the full test set, in order.
-#   1. Plugin build: make (LV2 + VST3) + LV2 TTL generation. This mirrors
-#      the build portion of build-test-install.sh, minus its interactive
-#      install prompt -- validation should not block on a question.
+# This is the release build script: plain `make` builds every target
+# (LV2 + VST3), the built bundles carry the models, and every gated step
+# must pass -- a green run here produces shippable bundles. Non-interactive;
+# install separately with install.sh.
+#   1. Plugin build: make (LV2 + VST3) + LV2 TTL generation.
 #   2. tests/run_drills.sh -- audio drills (gated hiss + hum, report-only
 #      combo + quiet).
 #   3. tests/run-unit-tests.sh -- engine unit tests.
