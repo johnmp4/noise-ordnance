@@ -14,7 +14,7 @@ theme_led: #33ff66
 stats:
   - "+53.4 dB | Hiss reduction, gated drill"
   - "+58.7 dB | Combo drill, noisy speech"
-  - "10 | Parameters, each one earning its place"
+  - "+76.5 dB | Hum reduction, gated drill"
 links:
   - "Documentation | https://plugins.johnpeterman.me/noise-ordnance"
   - "Source | https://github.com/johnmp4/noise-ordnance"
@@ -53,12 +53,17 @@ voice in the delta is faint. That's your sweet spot.
 
 ## Before / after
 
-Same noisy clip, raw and through Noise Ordnance at default settings.
+The same recorded speech clip, with hiss and mains hum — first raw, then through Noise Ordnance, dialed in for this voice.
+
+**Before: raw clip, hiss and hum untouched.**
 
 <audio controls>
   <source src="../../tests/drills/paint-drying-combo.wav" type="audio/wav">
   Before: raw noisy clip.
 </audio>
+
+**After: the same clip through Noise Ordnance.**
+
 <audio controls>
   <source src="./paint-drying-combo-denoised.wav" type="audio/wav">
   After: through Noise Ordnance.

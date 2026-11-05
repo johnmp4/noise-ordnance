@@ -1,7 +1,5 @@
 # Noise Ordnance
 
-Built by **Jay Peterman**.
-
 A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same build). DeepFilterNet kills hiss and broadband noise; a traditional notch cascade handles mains hum. Built for post-production (podcast dialogue, stream VODs, recorded tracks) where you want the noise gone and the voice untouched.
 
 - 📖 **Documentation:** https://plugins.johnpeterman.me/noise-ordnance
@@ -9,16 +7,30 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 - 📦 **Releases:** https://github.com/johnmp4/noise-ordnance/releases
 - 🐛 **Issues:** https://github.com/johnmp4/noise-ordnance/issues
 
-**What it is not:** a live instrument effect. The model works in 10 ms frames at 48 kHz, and the engine's wet-start prefix plus STFT + lookahead bring the measured total latency to 117 ms (DeepFilterNet3) or 97 ms (DeepFilterNet3 Low Latency) at 48 kHz — see "Measured performance" below for the per-model numbers and how they were measured. Latency is reported to the host for delay compensation — don't monitor through it.
+**Lookahead is part of the design:** the model uses lookahead to do its best work on tracks you have already recorded, and the plugin reports its latency to the host for delay compensation. Per-model numbers are in "Measured performance" below.
+
+## Install
+
+Today, install is a source build. Packaged releases for Linux and Windows are on the way.
+
+Prerequisites: a C++17 toolchain, `make`, `pkg-config`, `git`, `python3`, and SpeexDSP (`libspeexdsp-dev` on Debian/Ubuntu). The install script sets up a project-local Rust toolchain for you if `cargo` isn't already available.
+
+```bash
+bash third_party/install-third-party.sh   # clones DPF + DeepFilterNet (pinned), builds libDF, downloads models
+make                                      # LV2 + VST3 bundles land in third_party/bin/
+bash build-test-install.sh                # full build + regression tests + install prompt
+```
+
+Load the LV2 or VST3 bundle in your host. Model files are downloaded during the install step and copied into each bundle's `models/` directory — if the plugin loads but does nothing, check that directory first: a bundle without models runs dry passthrough by design.
 
 ## The chain
 
 Dual-mono: stereo is two independent engines, one per channel. Each channel runs, in order:
 
 1. **Hum notch filter** — cascaded biquads at 50 or 60 Hz plus the first four harmonics. Old-school DSP, runs before everything else. Toggleable.
-2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use). DeepFilterNet2 is not offered: both DF2 models abort the host process at load time under libDF's tract backend, which cannot lower DF2's graph.
+2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use).
 3. **Post-filter** — DeepFilterNet's perceptual cleanup stage, after the model. The Postfilter Strength knob (0–0.05, default 0.02; 0 = off) sets its strength.
-4. **Aggressiveness** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output: it is the DF-native equivalent of the old attenuation floors, but one global number instead of per-band values. This is the knob that keeps the "metallic" edge out.
+4. **Aggressiveness** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output. This is the knob that keeps the "metallic" edge out.
 5. **Wet/dry mix** — the Reduction knob, with smoothed transitions so automation doesn't zip.
 
 ## Parameters (10)
@@ -40,7 +52,7 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 
 1. Enable Delta Monitor and set Aggressiveness to 100 (no limit).
 2. Listen to what's being removed — heavy voice ghosting means the model is cutting too hard.
-3. Lower Aggressiveness until the voice in the delta is faint. A little ghosting is normal: the model always takes some voice along with the noise, so don't chase a delta with no voice in it at all. Note the direction: with the old per-band floors you *raised* the floor to ease off; with Aggressiveness you *lower* it.
+3. Lower Aggressiveness until the voice in the delta is faint. A little ghosting is normal: the model always takes some voice along with the noise, so don't chase a delta with no voice in it at all.
 4. Disable Delta Monitor. That's your sweet spot.
 
 ## Measured performance
@@ -64,7 +76,6 @@ Measured by speech cross-correlation (`tests/check-latency.py`, confirmed by an 
 | hum (notch module on, 60 Hz) | +76.5 dB (−41.1 → −117.6) | −0.8 dB | ≥40 dB / ±1 dB: PASS |
 | combo (report-only) | +58.7 dB (−39.7 → −98.4) | −0.8 dB | — |
 | quiet (report-only) | floor to meter bottom (−60.4 → −240.0; effectively digital silence — do not quote +179.6 dB as a real figure) | −43.4 dB (quiet room tone is crushed too — expected at 100% on a speech model) | — |
-- Two-stage practical example (Noise Ordnance + Noise Repellent LV2, RNNoise era): Ordnance run gentle, then Repellent learns a pause. On the hiss+hum combo drill: **+27.5 dB** floor reduction, speech peaks −2.9 dB. Realistic numbers for a full chain tuned by ear, not a maximum-reduction figure. (Pre-DF numbers; re-tune with the DF engine before quoting for it.)
 
 ## Building
 
@@ -76,11 +87,9 @@ make                                      # LV2 + VST3 bundles land in third_par
 bash build-test-install.sh                # full build + regression tests + install prompt
 ```
 
-The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). DeepFilterNet2 is not loadable under this pin or under v0.5.6 (tract cannot lower DF2's graph), which is why only the DF3 models are offered (Low Latency Model switch: off = DF3, on = DF3 Low Latency). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
+The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
 
 **Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests.
-
-Tested in Ardour. When rebuilding while an old instance sits on a track: delete the instance first (bypass isn't enough — Ardour holds the old binary in memory), rebuild, reinstall, re-add.
 
 ## Testing
 
@@ -97,13 +106,9 @@ Only the clean speech file ships in the repo; the noisy variants are derived loc
 
 Do not test the model with synthetic tones: DeepFilterNet is a speech model, so a sine measures nothing meaningful. Tones belong in unit tests of the hum filter alone, with the model out of the path.
 
-## Roadmap
-
-- **GUI / commercial version:** when someone asks. The open LV2 is the product for now.
-
 ## Contributing
 
-Bug reports and pull requests are welcome — please open an issue first for anything bigger than a typo so the approach can be agreed on. Run the drill suite (`tests/run_drills.sh`) before submitting DSP changes.
+Bug reports and pull requests are welcome — please open an issue first for anything bigger than a typo so the approach can be agreed on. Before submitting DSP changes, run the drill suite (`tests/run_drills.sh`) and the unit tests (`tests/run-unit-tests.sh`).
 
 ## License
 
