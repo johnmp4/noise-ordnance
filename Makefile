@@ -33,8 +33,16 @@ lv2_sep vst3: $(DF_STATICLIB)
 $(DF_STATICLIB):
 	bash third_party/build-libdf.sh
 
-SPEEXDSP_CFLAGS := $(shell pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/include")
-SPEEXDSP_LIBS := $(shell pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")
+# Use DPF's PKG_CONFIG here, not plain `pkg-config`: DPF defaults it to
+# `pkg-config --static` on Windows and plain `pkg-config` elsewhere.
+# The project previously bypassed that default, so Windows builds
+# linked the speex DLL. With this, Windows links speexdsp statically
+# when the package ships a static archive (verify with objdump: no
+# libspeexdsp-1.dll in the import table), while Linux behavior is
+# unchanged. Goal: a release bundle with no speex DLL to install
+# next to it.
+SPEEXDSP_CFLAGS := $(shell $(PKG_CONFIG) --cflags speexdsp 2>/dev/null || echo "-I/usr/include")
+SPEEXDSP_LIBS := $(shell $(PKG_CONFIG) --libs speexdsp 2>/dev/null || echo "-lspeexdsp")
 
 BUILD_C_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
@@ -48,3 +56,4 @@ BUILD_CXX_FLAGS += -std=gnu++17
 EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) -lpthread -ldl $(DF_STATICLIB)
 
 .PHONY: all
+
