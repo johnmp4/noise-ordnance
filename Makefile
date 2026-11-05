@@ -61,7 +61,15 @@ BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 BUILD_CXX_FLAGS += -std=gnu++17
 # A Rust staticlib needs the pthread/dl libs for std on Linux.
 EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) -lpthread -ldl $(DF_STATICLIB)
+# A Rust staticlib needs these system libs for std on Windows: Winsock
+# (networking), NT native API, BCrypt (randomness) and userenv (user
+# profile directory). They must come after libdf.a in link order, which
+# holds because this appends after the line above.
+ifeq ($(WINDOWS),true)
+EXTRA_DSP_LIBS += -lws2_32 -lntdll -lbcrypt -luserenv
+endif
 
 .PHONY: all
+
 
 
