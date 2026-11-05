@@ -14,6 +14,12 @@
 #include <cstdio>
 #include <sys/stat.h>
 
+// M_PI is not standard C++: strict -std=c++17 hides it on MinGW-w64,
+// while glibc still exposes it. Define it when missing.
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 void DenoiserEngine::debugLog(const char* fmt, ...) {
   (void)fmt;
 #ifdef DEBUG
