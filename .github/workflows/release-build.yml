@@ -1,0 +1,168 @@
+# Noise Ordnance — frozen release-build workflow
+#
+# Why this exists: Jay's plan from the night of Nov 4-5, 2026 — keep the
+# studio machine current for dev, and build releases from somewhere frozen,
+# either a Docker container on his server or a free cloud option, with the
+# Windows build automated too (MS-hosted images). GitHub Actions is free
+# for a public repo and provides both runners used here.
+#
+# Status (Nov 5, 2026): TESTING on the `release-tooling` branch. The
+# branch now carries all three release-build fixes (portable CPU
+# RUSTFLAGS, Linux static speex, Windows system libs), so a green run
+# here is meaningful, not just plumbing. The push trigger below is
+# TEMPORARY — it exists so the run fires on every push to this branch
+# while the workflow itself is being tested. REMOVE the release-tooling
+# push trigger before merging, and add the main push/pull_request
+# triggers at merge time (the workflow only belongs on main once it is
+# green and the branch is merged). workflow_dispatch stays, for manual
+# re-runs.
+#
+# What each runner pins, and why:
+#   - Linux: ubuntu-22.04 (glibc 2.35). A 22.04 binary runs on 22.04 AND
+#     everything newer; a 24.04 build (glibc 2.39) would exclude 22.04
+#     users — roughly half the Ubuntu-family audience by archive stats.
+#     The glibc floor is the ONLY thing standing between "works on my
+#     machine" and "works on theirs" once speex is static.
+#   - Windows: windows-latest (MS-hosted) + MSYS2 MinGW64, the exact
+#     toolchain Jay builds with locally. NOT MSVC: the project pins
+#     -std=gnu++17 and the Rust static lib must be the GNU host.
+#
+# Known unknowns (flagged, not hidden):
+#   - The Rust step on Windows is the fiddliest part. rustup on Windows
+#     defaults to the MSVC host, and an MSVC-built libdf.a cannot be
+#     linked by MinGW gcc. The step below installs rustup with
+#     --default-host x86_64-pc-windows-gnu inside the MSYS2 shell. If
+#     that proves awkward, the alternative is MSYS2's own Rust package
+#     (mingw-w64-x86_64-rust), which is GNU-host by construction.
+#   - First libDF build downloads crates from crates.io and takes a
+#     while (tract is a large tree); allow ~2 GB disk. No caching is
+#     wired in yet — add actions/cache for ~/.cargo and the target dir
+#     only after the first green run.
+#   - Only `make vst3` is built here. The Makefile also offers lv2_sep;
+#     add it to the Linux job once an LV2 CI build is verified.
+#   - The `ldd` / objdump checks below assert the copy-to-folder goal:
+#     no libspeexdsp.so on Linux, no non-system DLLs on Windows.
+#   - A green CI run does not replace loading the .vst3 in a host and
+#     playing audio through it — that manual check still stands.
+
+name: Release build
+
+"on":
+  push:
+    branches: [release-tooling]
+  workflow_dispatch:
+
+jobs:
+  linux-vst3:
+    name: Linux VST3 (Ubuntu 22.04, glibc 2.35 floor)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libspeexdsp-dev git python3 curl tar
+          # libspeexdsp-dev ships the static archive the Makefile's
+          # -Bstatic speex wrap needs; without it the build fails loudly
+          # instead of silently shipping a dynamic dependency.
+
+      - name: Rust toolchain (Linux GNU host is the default)
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustc -vV
+
+      - name: Fetch third-party code, build libDF, download models
+        run: bash third_party/install-third-party.sh
+        # Clones DPF + DeepFilterNet (pinned), builds libdf.a, downloads
+        # the DeepFilterNet3 and DeepFilterNet3_ll model tarballs.
+
+      - name: Build VST3
+        run: make vst3
+        # Portable CPU is the build-libdf.sh default
+        # (RUSTFLAGS '-C target-cpu=x86-64'); Linux static speex and the
+        # Windows system-libs block live in the Makefile on this branch.
+
+      - name: Bundle the models into the .vst3
+        run: |
+          mkdir -p third_party/bin/NoiseOrdnance.vst3/models
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+
+      - name: Verify no dynamic speex dependency (copy-to-folder check)
+        run: |
+          SO=$(find third_party/bin/NoiseOrdnance.vst3 -name '*.so' | head -n 1)
+          echo "Checking $SO"
+          ldd "$SO"
+          if ldd "$SO" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
+          echo "glibc symbols required:"
+          objdump -T "$SO" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 5
+
+      - name: Upload Linux VST3 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-linux-vst3
+          path: third_party/bin/NoiseOrdnance.vst3
+
+  windows-vst3:
+    name: Windows VST3 (MSYS2 MinGW64, GNU Rust)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install MSYS2 MinGW64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-speexdsp
+            mingw-w64-x86_64-dlfcn
+            git python curl tar
+          # Same package list Jay builds with locally. dlfcn is the shim
+          # for the Makefile's unconditional -ldl flag (nothing in the
+          # plugin calls dlopen on Windows; DPF uses LoadLibrary there).
+          # msystem MINGW64 — not UCRT64 — matches the local setup.
+
+      - name: Rust toolchain, GNU host (NOT MSVC)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host x86_64-pc-windows-gnu --default-toolchain stable
+          source "$HOME/.cargo/env"
+          rustc -vV
+          # The host line MUST read x86_64-pc-windows-gnu. An MSVC-host
+          # libdf.a cannot be linked by MinGW gcc — this is the gotcha
+          # from the local Windows setup.
+
+      - name: Fetch third-party code, build libDF, download models
+        run: |
+          source "$HOME/.cargo/env"
+          bash third_party/install-third-party.sh
+
+      - name: Build VST3
+        run: |
+          source "$HOME/.cargo/env"
+          make vst3
+
+      - name: Bundle the models into the .vst3
+        run: |
+          mkdir -p third_party/bin/NoiseOrdnance.vst3/models
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+
+      - name: Verify only Windows system DLLs (copy-to-folder check)
+        run: |
+          VST3=$(find third_party/bin/NoiseOrdnance.vst3 -name '*.vst3' | head -n 1)
+          echo "Checking $VST3"
+          objdump -p "$VST3" | grep 'DLL Name'
+          # Fail on any MinGW/speex runtime DLL a user would have to install.
+          if objdump -p "$VST3" | grep -iE 'libstdc|libgcc|libwinpthread|libspeexdsp|libdl'; then echo "FAIL: non-system DLL dependency"; exit 1; fi
+
+      - name: Upload Windows VST3 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-windows-vst3
+          path: third_party/bin/NoiseOrdnance.vst3
