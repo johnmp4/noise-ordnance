@@ -42,12 +42,21 @@ MODELS=(
 BASE="https://github.com/Rikorose/DeepFilterNet/raw/main/models"
 
 echo "=== Noise Ordnance: downloading DeepFilterNet models to $OUT ==="
+# Portable file size: GNU stat (Linux) takes -c%s, BSD stat (macOS)
+# takes -f%z.
+file_size() {
+  if [[ "$(uname -s)" == Darwin* ]]; then
+    stat -f%z "$1"
+  else
+    stat -c%s "$1"
+  fi
+}
 for entry in "${MODELS[@]}"; do
   name="${entry%% *}"
   expected="${entry##* }"
   dest="$OUT/$name"
   if [[ -f "$dest" ]]; then
-    actual="$(stat -c%s "$dest")"
+    actual="$(file_size "$dest")"
     if [[ "$actual" == "$expected" ]]; then
       echo "--- $name: already present, size OK ($actual bytes), skipping ---"
       continue
@@ -56,7 +65,7 @@ for entry in "${MODELS[@]}"; do
   fi
   echo "--- downloading $name ---"
   curl -L --fail -o "$dest" "$BASE/$name"
-  actual="$(stat -c%s "$dest")"
+  actual="$(file_size "$dest")"
   if [[ "$actual" != "$expected" ]]; then
     echo "WARNING: $name downloaded size $actual != expected $expected."
     echo "  Upstream may have changed the file. Re-measure per-model"
