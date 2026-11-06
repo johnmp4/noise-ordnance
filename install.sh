@@ -7,10 +7,10 @@
 #
 #   Linux:   NoiseOrdnance.lv2 -> ~/.lv2
 #            NoiseOrdnance.vst3 -> ~/.vst3
-#            NoiseOrdnance.clap -> ~/.clap (models -> ~/.clap/models)
+#            NoiseOrdnance.clap -> ~/.clap (models -> ~/.clap/NoiseOrdnance/models)
 #   Windows: NoiseOrdnance.vst3 -> C:\Program Files\Common Files\VST3
 #            NoiseOrdnance.clap -> C:\Program Files\Common Files\CLAP
-#            (models -> ...\CLAP\models; LV2 is not installed on
+#            (models -> ...\CLAP\NoiseOrdnance\models; LV2 is not installed on
 #            Windows; the script requests administrator approval via
 #            UAC when the shell is not elevated)
 #
@@ -40,8 +40,10 @@ install_one() {
 install_clap() {
   # install_clap <clap-file> <models-source-dir> <destination-dir>
   # CLAP is a single file, not a bundle: the file goes in the CLAP
-  # directory and the model tarballs go in models/ beside it, which
-  # is where the plugin looks for them (see NoiseOrdnance.cpp).
+  # directory and the model tarballs go in a NoiseOrdnance/models/
+  # folder beside it, which is where the plugin looks for them
+  # (see NoiseOrdnance.cpp). The folder is namespaced so it can't
+  # collide with other plugins' files in the shared CLAP directory.
   local src="$1" models="$2" dest="$3"
   local name
   name="$(basename "$src")"
@@ -49,11 +51,11 @@ install_clap() {
     echo "FAIL install: model tarballs not found in $models -- run third_party/install-third-party.sh first"
     exit 1
   fi
-  mkdir -p "$dest" "$dest/models"
-  rm -f "$dest/$name" "$dest/models/DeepFilterNet3_onnx.tar.gz" "$dest/models/DeepFilterNet3_ll_onnx.tar.gz"
+  mkdir -p "$dest" "$dest/NoiseOrdnance/models"
+  rm -f "$dest/$name" "$dest/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz" "$dest/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz"
   cp -a "$src" "$dest/"
-  cp -a "$models/DeepFilterNet3_onnx.tar.gz" "$models/DeepFilterNet3_ll_onnx.tar.gz" "$dest/models/"
-  echo "Installed: $dest/$name + $dest/models/"
+  cp -a "$models/DeepFilterNet3_onnx.tar.gz" "$models/DeepFilterNet3_ll_onnx.tar.gz" "$dest/NoiseOrdnance/models/"
+  echo "Installed: $dest/$name + $dest/NoiseOrdnance/models/"
 }
 
 case "$(uname -s)" in

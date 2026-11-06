@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Peterman
 // SPDX-License-Identifier: MIT
 
-// Engine unit test: async inference (worker thread, Oct 31, 2026) must
+// Engine unit test: async inference (worker thread) must
 // produce bit-identical output to the synchronous path. Same input
 // (3 s of real speech + 1 s of trailing silence, block 512) through
 // two engines, one with the worker started and one without. The async

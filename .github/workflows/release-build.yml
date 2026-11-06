@@ -1,64 +1,55 @@
 # Noise Ordnance — frozen release-build workflow
 #
-# Why this exists: Jay's plan from the night of Nov 4-5, 2026 — keep the
-# studio machine current for dev, and build releases from somewhere frozen,
-# either a Docker container on his server or a free cloud option, with the
-# Windows build automated too (MS-hosted images). GitHub Actions is free
-# for a public repo and provides both runners used here.
+# Release binaries are built from a fixed environment, not a developer
+# machine, so the build is reproducible and the glibc floor is pinned.
+# GitHub Actions is free for a public repo and provides both runners.
 #
-# Status (Nov 6, 2026): TESTING on the `release-tooling` branch. The
-# branch now carries all three release-build fixes (portable CPU
-# RUSTFLAGS, Linux static speex, Windows system libs), so a green run
-# here is meaningful, not just plumbing. Linux builds VST3 + LV2;
-# Windows builds VST3 only. The push trigger below is
-# TEMPORARY — it exists so the run fires on every push to this branch
-# while the workflow itself is being tested. REMOVE the release-tooling
-# push trigger before merging, and add the main push/pull_request
-# triggers at merge time (the workflow only belongs on main once it is
-# green and the branch is merged). workflow_dispatch stays, for manual
-# re-runs.
+# Status: TESTING on the `release-tooling` branch. The push trigger
+# below is TEMPORARY — it exists so the run fires on every push to this
+# branch while the workflow itself is being tested. REMOVE the
+# release-tooling push trigger before merging, and add the main
+# push/pull_request triggers at merge time (the workflow only belongs
+# on main once it is green and the branch is merged). workflow_dispatch
+# stays, for manual re-runs.
 #
 # What each runner pins, and why:
 #   - Linux: ubuntu-22.04 (glibc 2.35). A 22.04 binary runs on 22.04 AND
 #     everything newer; a 24.04 build (glibc 2.39) would exclude 22.04
-#     users — roughly half the Ubuntu-family audience by archive stats.
-#     The glibc floor is the ONLY thing standing between "works on my
-#     machine" and "works on theirs" once speex is static.
-#   - Windows: windows-latest (MS-hosted) + MSYS2 MinGW64, the exact
-#     toolchain Jay builds with locally. NOT MSVC: the project pins
-#     -std=gnu++17 and the Rust static lib must be the GNU host.
+#     users. The glibc floor is what makes a binary built here run on
+#     the user's machine, once speex is static.
+#   - Windows: windows-latest (MS-hosted) + MSYS2 MinGW64. NOT MSVC:
+#     the project pins -std=gnu++17 and the Rust static lib must be
+#     the GNU host.
 #
-# Known unknowns (flagged, not hidden):
-#   - The Rust step on Windows is the fiddliest part. rustup on Windows
-#     defaults to the MSVC host, and an MSVC-built libdf.a cannot be
-#     linked by MinGW gcc. The step below installs rustup with
-#     --default-host x86_64-pc-windows-gnu inside the MSYS2 shell. First
-#     run (Nov 5, 2026) also tripped on rustup installing into the
-#     Windows profile (%USERPROFILE%\.cargo) while the MSYS2 shell's
-#     $HOME is /home/runneradmin — so cargo is put on PATH via cygpath,
-#     never via $HOME/.cargo/env. If that proves awkward, the alternative
-#     is MSYS2's own Rust package (mingw-w64-x86_64-rust), which is
+# Notes:
+#   - Rust on Windows: rustup defaults to the MSVC host, and an
+#     MSVC-built libdf.a cannot be linked by MinGW gcc. The step below
+#     installs rustup with --default-host x86_64-pc-windows-gnu inside
+#     the MSYS2 shell. rustup installs into the Windows profile
+#     (%USERPROFILE%\.cargo) while the MSYS2 shell's $HOME is
+#     /home/runneradmin — so cargo is put on PATH via cygpath, never
+#     via $HOME/.cargo/env. If that proves awkward, the alternative is
+#     MSYS2's own Rust package (mingw-w64-x86_64-rust), which is
 #     GNU-host by construction.
 #   - First libDF build downloads crates from crates.io and takes a
 #     while (tract is a large tree); allow ~2 GB disk. No caching is
 #     wired in yet — add actions/cache for ~/.cargo and the target dir
 #     only after the first green run.
-#   - Linux builds LV2 too (Nov 6, 2026): plain `make` builds both
-#     targets, TTLs are generated the same way validate-build.sh does,
-#     and tests/lv2-smoke-test.sh gates the LV2 artifact. CLAP is
-#     built on both platforms (Nov 6, 2026): a single .clap file, so
-#     the models ship in models/ next to the file — not inside a
-#     bundle — and the plugin resolves them from the file's directory
-#     (see NoiseOrdnance.cpp). LV2 remains Linux-only.
-#   - Packaging rule (Nov 6, 2026 lesson): upload-artifact zips a
-#     directory's CONTENTS, so it is pointed at a staging dir whose
-#     only child is the bundle — the bundle folder then survives the
-#     download. Never pre-zip the bundle first: upload-artifact zips
-#     again and the download comes out double-zipped.
+#   - Linux builds LV2, VST3 and CLAP; Windows builds VST3 and CLAP.
+#     LV2 TTLs are generated the same way validate-build.sh does, and
+#     tests/lv2-smoke-test.sh gates the LV2 artifact. CLAP is a single
+#     .clap file, so the models ship in a NoiseOrdnance/ folder next to
+#     the file — not inside a bundle — and the plugin resolves them from
+#     that folder (see NoiseOrdnance.cpp). LV2 remains Linux-only.
+#   - Packaging rule: upload-artifact zips a directory's CONTENTS, so
+#     it is pointed at a staging dir whose only child is the bundle —
+#     the bundle folder then survives the download. Never pre-zip the
+#     bundle first: upload-artifact zips again and the download comes
+#     out double-zipped.
 #   - The `ldd` / objdump checks below assert the copy-to-folder goal:
 #     no libspeexdsp.so on Linux, no non-system DLLs on Windows.
-#   - A green CI run does not replace loading the .vst3 in a host and
-#     playing audio through it — that manual check still stands.
+#   - A green CI run does not replace loading the built plugin in a
+#     host and playing audio through it — that manual check still stands.
 
 name: Release build
 
@@ -98,7 +89,7 @@ jobs:
         # Plain make builds every target (lv2_sep + vst3 + clap). Portable CPU
         # is the build-libdf.sh default (RUSTFLAGS '-C target-cpu=x86-64');
         # Linux static speex and the Windows system-libs block live in
-        # the Makefile on this branch.
+        # the Makefile.
 
       - name: Generate LV2 TTLs
         run: |
@@ -137,17 +128,19 @@ jobs:
           # upload-artifact zips a directory's CONTENTS, dropping the
           # directory itself — so each bundle is staged as the only
           # child of its own dir, and the bundle folder survives the
-          # download (first-run lesson, Nov 5, 2026: Ardour ignored a
-          # bare Contents/ + models/ with no .vst3 wrapper). Do NOT
-          # pre-zip the bundle: upload-artifact zips again and the
-          # download comes out double-zipped (Nov 6, 2026 lesson).
-          mkdir -p dist/linux-vst3 dist/linux-lv2 dist/linux-clap/models
+          # download. Without the wrapper folder a host sees a bare
+          # Contents/ + models/ and ignores it. Do NOT pre-zip the
+          # bundle: upload-artifact zips again and the download comes
+          # out double-zipped.
+          mkdir -p dist/linux-vst3 dist/linux-lv2 dist/linux-clap/NoiseOrdnance/models
           cp -r third_party/bin/NoiseOrdnance.vst3 dist/linux-vst3/
           cp -r third_party/bin/NoiseOrdnance.lv2 dist/linux-lv2/
-          # CLAP is a single file, not a bundle: the file plus a models/
-          # dir beside it (the plugin looks for models/ next to the .clap).
+          # CLAP is a single file, not a bundle: the file plus a
+          # NoiseOrdnance/models/ folder beside it (namespaced — a bare
+          # models/ dir in the shared CLAP folder could collide with
+          # another plugin's files).
           cp third_party/bin/NoiseOrdnance.clap dist/linux-clap/
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/linux-clap/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/linux-clap/NoiseOrdnance/models/
 
       - name: CLAP smoke check (entry point + models)
         run: |
@@ -155,8 +148,8 @@ jobs:
           test -f "$CLAP"
           nm -D --defined-only "$CLAP" | grep -q "clap_entry"
           if ldd "$CLAP" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
-          test -f dist/linux-clap/models/DeepFilterNet3_onnx.tar.gz
-          test -f dist/linux-clap/models/DeepFilterNet3_ll_onnx.tar.gz
+          test -f dist/linux-clap/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz
+          test -f dist/linux-clap/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz
 
       - name: Upload Linux VST3 bundle
         uses: actions/upload-artifact@v4
@@ -196,10 +189,9 @@ jobs:
             mingw-w64-x86_64-speexdsp
             mingw-w64-x86_64-dlfcn
             git python curl tar
-          # Same package list Jay builds with locally. dlfcn is the shim
-          # for the Makefile's unconditional -ldl flag (nothing in the
-          # plugin calls dlopen on Windows; DPF uses LoadLibrary there).
-          # msystem MINGW64 — not UCRT64 — matches the local setup.
+          # dlfcn is the shim for the Makefile's unconditional -ldl flag
+          # (nothing in the plugin calls dlopen on Windows; DPF uses
+          # LoadLibrary there). msystem MINGW64 — not UCRT64.
 
       - name: Rust toolchain, GNU host (NOT MSVC)
         run: |
@@ -207,12 +199,11 @@ jobs:
           # rustup is a Windows binary: it installs into %USERPROFILE%\.cargo,
           # NOT the MSYS2 $HOME (/home/runneradmin). Put cargo on PATH via the
           # profile path instead of sourcing $HOME/.cargo/env, which does not
-          # exist here (first-run failure, Nov 5, 2026).
+          # exist here.
           export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
           rustc -vV
           # The host line MUST read x86_64-pc-windows-gnu. An MSVC-host
-          # libdf.a cannot be linked by MinGW gcc — this is the gotcha
-          # from the local Windows setup.
+          # libdf.a cannot be linked by MinGW gcc.
 
       - name: Fetch third-party code, build libDF, download models
         run: |
@@ -249,12 +240,13 @@ jobs:
           # Same staging rule as the Linux job: upload-artifact is
           # pointed at a dir whose only child is the bundle, so the
           # .vst3 folder survives — and the bundle is NOT pre-zipped,
-          # or the download comes out double-zipped (Nov 6, 2026).
-          mkdir -p dist/windows-vst3 dist/windows-clap/models
+          # or the download comes out double-zipped.
+          mkdir -p dist/windows-vst3 dist/windows-clap/NoiseOrdnance/models
           cp -r third_party/bin/NoiseOrdnance.vst3 dist/windows-vst3/
-          # CLAP is a single file: the file plus a models/ dir beside it.
+          # CLAP is a single file: the file plus a NoiseOrdnance/models/
+          # folder beside it (namespaced, as in the Linux job).
           cp third_party/bin/NoiseOrdnance.clap dist/windows-clap/
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/windows-clap/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/windows-clap/NoiseOrdnance/models/
 
       - name: Upload Windows VST3 bundle
         uses: actions/upload-artifact@v4

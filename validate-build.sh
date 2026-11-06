@@ -60,11 +60,11 @@ echo "=== validate-build: copying models into build bundles ==="
 mkdir -p third_party/bin/NoiseOrdnance.lv2/models third_party/bin/NoiseOrdnance.vst3/models
 cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
 cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
-# CLAP is a single file, not a bundle: the models live in models/ next
-# to the .clap file in the build output, which is where the plugin
-# looks for them (see NoiseOrdnance.cpp).
-mkdir -p third_party/bin/models
-cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/models/
+# CLAP is a single file, not a bundle: the models live in a
+# NoiseOrdnance/ folder next to the .clap file in the build output,
+# which is where the plugin looks for them (see NoiseOrdnance.cpp).
+mkdir -p third_party/bin/NoiseOrdnance/models
+cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance/models/
 
 echo "=== validate-build: audio drills ==="
 bash tests/run_drills.sh
