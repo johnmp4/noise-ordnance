@@ -353,7 +353,7 @@ jobs:
         run: |
           VST3=dist/macos-vst3/NoiseOrdnance.vst3
           CLAP=dist/macos-clap/NoiseOrdnance.clap
-          test -d "$VST3" "$CLAP"
+          test -d "$VST3" && test -d "$CLAP"
           test -f "$VST3/models/DeepFilterNet3_onnx.tar.gz"
           test -f "$VST3/models/DeepFilterNet3_ll_onnx.tar.gz"
           CLAP_BIN=$(find "$CLAP" -type f -name 'NoiseOrdnance' | head -n 1)
