@@ -31,9 +31,13 @@
 #   - The Rust step on Windows is the fiddliest part. rustup on Windows
 #     defaults to the MSVC host, and an MSVC-built libdf.a cannot be
 #     linked by MinGW gcc. The step below installs rustup with
-#     --default-host x86_64-pc-windows-gnu inside the MSYS2 shell. If
-#     that proves awkward, the alternative is MSYS2's own Rust package
-#     (mingw-w64-x86_64-rust), which is GNU-host by construction.
+#     --default-host x86_64-pc-windows-gnu inside the MSYS2 shell. First
+#     run (Nov 5, 2026) also tripped on rustup installing into the
+#     Windows profile (%USERPROFILE%\.cargo) while the MSYS2 shell's
+#     $HOME is /home/runneradmin — so cargo is put on PATH via cygpath,
+#     never via $HOME/.cargo/env. If that proves awkward, the alternative
+#     is MSYS2's own Rust package (mingw-w64-x86_64-rust), which is
+#     GNU-host by construction.
 #   - First libDF build downloads crates from crates.io and takes a
 #     while (tract is a large tree); allow ~2 GB disk. No caching is
 #     wired in yet — add actions/cache for ~/.cargo and the target dir
@@ -132,7 +136,11 @@ jobs:
       - name: Rust toolchain, GNU host (NOT MSVC)
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host x86_64-pc-windows-gnu --default-toolchain stable
-          source "$HOME/.cargo/env"
+          # rustup is a Windows binary: it installs into %USERPROFILE%\.cargo,
+          # NOT the MSYS2 $HOME (/home/runneradmin). Put cargo on PATH via the
+          # profile path instead of sourcing $HOME/.cargo/env, which does not
+          # exist here (first-run failure, Nov 5, 2026).
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
           rustc -vV
           # The host line MUST read x86_64-pc-windows-gnu. An MSVC-host
           # libdf.a cannot be linked by MinGW gcc — this is the gotcha
@@ -140,12 +148,12 @@ jobs:
 
       - name: Fetch third-party code, build libDF, download models
         run: |
-          source "$HOME/.cargo/env"
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
           bash third_party/install-third-party.sh
 
       - name: Build VST3
         run: |
-          source "$HOME/.cargo/env"
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
           make vst3
 
       - name: Bundle the models into the .vst3
