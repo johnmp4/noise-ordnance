@@ -13,6 +13,10 @@
 #            (models -> ...\CLAP\NoiseOrdnance\models; LV2 is not installed on
 #            Windows; the script requests administrator approval via
 #            UAC when the shell is not elevated)
+#   macOS:   NoiseOrdnance.vst3 -> ~/Library/Audio/Plug-Ins/VST3
+#            NoiseOrdnance.clap -> ~/Library/Audio/Plug-Ins/CLAP
+#            (models -> ~/Library/Audio/Plug-Ins/CLAP/NoiseOrdnance/models;
+#            LV2 is not installed on macOS)
 #
 # Usage: bash install.sh  (from the project root)
 
@@ -38,12 +42,13 @@ install_one() {
 }
 
 install_clap() {
-  # install_clap <clap-file> <models-source-dir> <destination-dir>
-  # CLAP is a single file, not a bundle: the file goes in the CLAP
-  # directory and the model tarballs go in a NoiseOrdnance/models/
-  # folder beside it, which is where the plugin looks for them
-  # (see NoiseOrdnance.cpp). The folder is namespaced so it can't
-  # collide with other plugins' files in the shared CLAP directory.
+  # install_clap <clap-file-or-bundle> <models-source-dir> <destination-dir>
+  # CLAP is a single file on Linux/Windows and a bundle on macOS; either
+  # way the plugin goes in the CLAP directory and the model tarballs go
+  # in a NoiseOrdnance/models/ folder beside it, which is where the
+  # plugin looks for them (see NoiseOrdnance.cpp). The folder is
+  # namespaced so it can't collide with other plugins' files in the
+  # shared CLAP directory.
   local src="$1" models="$2" dest="$3"
   local name
   name="$(basename "$src")"
@@ -52,7 +57,7 @@ install_clap() {
     exit 1
   fi
   mkdir -p "$dest" "$dest/NoiseOrdnance/models"
-  rm -f "$dest/$name" "$dest/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz" "$dest/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz"
+  rm -rf "$dest/$name" "$dest/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz" "$dest/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz"
   cp -a "$src" "$dest/"
   cp -a "$models/DeepFilterNet3_onnx.tar.gz" "$models/DeepFilterNet3_ll_onnx.tar.gz" "$dest/NoiseOrdnance/models/"
   echo "Installed: $dest/$name + $dest/NoiseOrdnance/models/"
@@ -91,8 +96,17 @@ case "$(uname -s)" in
     install_clap "$CLAP_SRC" "$MODELS_SRC" "/c/Program Files/Common Files/CLAP"
     echo "Note: LV2 is not installed on Windows (Linux-only in this project)."
     ;;
+  Darwin*)
+    if [[ ! -d "$VST3_SRC" || ! -d "$CLAP_SRC" ]]; then
+      echo "FAIL install: built VST3/CLAP bundles not found in third_party/bin -- run validate-build.sh or debug.sh first"
+      exit 1
+    fi
+    install_one "$VST3_SRC" "$HOME/Library/Audio/Plug-Ins/VST3"
+    install_clap "$CLAP_SRC" "$MODELS_SRC" "$HOME/Library/Audio/Plug-Ins/CLAP"
+    echo "Note: LV2 is not installed on macOS (Linux-only in this project)."
+    ;;
   *)
-    echo "FAIL install: unsupported OS '$(uname -s)' -- Linux and Windows (MSYS2/MinGW64) only."
+    echo "FAIL install: unsupported OS '$(uname -s)' -- Linux, macOS and Windows (MSYS2/MinGW64) only."
     exit 1
     ;;
 esac

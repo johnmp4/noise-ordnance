@@ -14,11 +14,11 @@
 # into the plugin bundles' models/ directories, which is where the
 # plugin looks for them (after $NOISE_ORDNANCE_MODEL_DIR).
 #
-# Sizes below are the sizes recorded when this branch was created
-# (GitHub API, Oct 2026). A mismatch fails the download with a warning
-# -- it usually means the upstream file changed, in which case the
-# per-model latencies in dsp/DenoiserEngine.cpp must be re-measured
-# (see tests/latency-by-model.sh) before trusting the build.
+# Sizes below are the recorded sizes for these files. A mismatch fails
+# the download with a warning -- it usually means the upstream file
+# changed, in which case the per-model latencies in
+# dsp/DenoiserEngine.cpp must be re-measured (see
+# tests/latency-by-model.sh) before trusting the build.
 #
 # Usage: bash third_party/download-models.sh
 # Run from the project root (or anywhere: it resolves its own dir).

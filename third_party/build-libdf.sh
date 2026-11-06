@@ -68,9 +68,9 @@ echo "    source: $DF (pinned commit in install-third-party.sh)"
 # can crash with an illegal instruction on an older CPU. A dev who wants
 # machine-specific codegen can still override with a pre-set non-empty
 # RUSTFLAGS, e.g. RUSTFLAGS='-C target-cpu=native'.
-# Tempered expectation, measured Oct 31, 2026: tract's matmul kernels
-# already select AVX2/FMA at runtime (verified in tract-linalg 0.21.4
-# source: is_x86_feature_detected), so native tuning mostly helps the
+# Tempered expectation: tract's matmul kernels already select AVX2/FMA
+# at runtime (verified in tract-linalg 0.21.4 source:
+# is_x86_feature_detected), so native tuning mostly helps the
 # surrounding scalar code -- a few percent, not a fix for the 128-sample
 # deadline problem (that is what the worker-thread engine change is
 # for).
