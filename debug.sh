@@ -32,6 +32,10 @@ bash third_party/dpf/utils/generate-ttl.sh third_party/bin
 mkdir -p "$ROOT/third_party/bin/NoiseOrdnance.lv2/models" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models"
 cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.lv2/models/"
 cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models/"
+# CLAP is a single file, not a bundle: the models live in models/ next
+# to the .clap file in the build output (see NoiseOrdnance.cpp).
+mkdir -p "$ROOT/third_party/bin/models"
+cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/models/"
 
 echo "=== Noise Ordnance: install? ==="
 printf 'Install the built bundles? [Y/n]: '

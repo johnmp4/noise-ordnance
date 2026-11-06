@@ -45,9 +45,11 @@
 #     only after the first green run.
 #   - Linux builds LV2 too (Nov 6, 2026): plain `make` builds both
 #     targets, TTLs are generated the same way validate-build.sh does,
-#     and tests/lv2-smoke-test.sh gates the LV2 artifact. Windows stays
-#     VST3-only — the release framing is Linux (LV2 + VST3) and
-#     Windows (VST3).
+#     and tests/lv2-smoke-test.sh gates the LV2 artifact. CLAP is
+#     built on both platforms (Nov 6, 2026): a single .clap file, so
+#     the models ship in models/ next to the file — not inside a
+#     bundle — and the plugin resolves them from the file's directory
+#     (see NoiseOrdnance.cpp). LV2 remains Linux-only.
 #   - Packaging rule (Nov 6, 2026 lesson): upload-artifact zips a
 #     directory's CONTENTS, so it is pointed at a staging dir whose
 #     only child is the bundle — the bundle folder then survives the
@@ -67,7 +69,7 @@ name: Release build
 
 jobs:
   linux:
-    name: Linux VST3 + LV2 (Ubuntu 22.04, glibc 2.35 floor)
+    name: Linux VST3 + LV2 + CLAP (Ubuntu 22.04, glibc 2.35 floor)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -91,9 +93,9 @@ jobs:
         # Clones DPF + DeepFilterNet (pinned), builds libdf.a, downloads
         # the DeepFilterNet3 and DeepFilterNet3_ll model tarballs.
 
-      - name: Build LV2 and VST3
+      - name: Build LV2, VST3 and CLAP
         run: make -j"$(nproc)"
-        # Plain make builds every target (lv2_sep + vst3). Portable CPU
+        # Plain make builds every target (lv2_sep + vst3 + clap). Portable CPU
         # is the build-libdf.sh default (RUSTFLAGS '-C target-cpu=x86-64');
         # Linux static speex and the Windows system-libs block live in
         # the Makefile on this branch.
@@ -139,9 +141,22 @@ jobs:
           # bare Contents/ + models/ with no .vst3 wrapper). Do NOT
           # pre-zip the bundle: upload-artifact zips again and the
           # download comes out double-zipped (Nov 6, 2026 lesson).
-          mkdir -p dist/linux-vst3 dist/linux-lv2
+          mkdir -p dist/linux-vst3 dist/linux-lv2 dist/linux-clap/models
           cp -r third_party/bin/NoiseOrdnance.vst3 dist/linux-vst3/
           cp -r third_party/bin/NoiseOrdnance.lv2 dist/linux-lv2/
+          # CLAP is a single file, not a bundle: the file plus a models/
+          # dir beside it (the plugin looks for models/ next to the .clap).
+          cp third_party/bin/NoiseOrdnance.clap dist/linux-clap/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/linux-clap/models/
+
+      - name: CLAP smoke check (entry point + models)
+        run: |
+          CLAP=dist/linux-clap/NoiseOrdnance.clap
+          test -f "$CLAP"
+          nm -D --defined-only "$CLAP" | grep -q "clap_entry"
+          if ldd "$CLAP" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
+          test -f dist/linux-clap/models/DeepFilterNet3_onnx.tar.gz
+          test -f dist/linux-clap/models/DeepFilterNet3_ll_onnx.tar.gz
 
       - name: Upload Linux VST3 bundle
         uses: actions/upload-artifact@v4
@@ -155,8 +170,14 @@ jobs:
           name: NoiseOrdnance-linux-lv2
           path: dist/linux-lv2
 
+      - name: Upload Linux CLAP bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-linux-clap
+          path: dist/linux-clap
+
   windows:
-    name: Windows VST3 (MSYS2 MinGW64, GNU Rust)
+    name: Windows VST3 + CLAP (MSYS2 MinGW64, GNU Rust)
     runs-on: windows-latest
     defaults:
       run:
@@ -198,10 +219,10 @@ jobs:
           export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
           bash third_party/install-third-party.sh
 
-      - name: Build VST3
+      - name: Build VST3 and CLAP
         run: |
           export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
-          make vst3
+          make vst3 clap
 
       - name: Bundle the models into the .vst3
         run: |
@@ -216,17 +237,33 @@ jobs:
           # Fail on any MinGW/speex runtime DLL a user would have to install.
           if objdump -p "$VST3" | grep -iE 'libstdc|libgcc|libwinpthread|libspeexdsp|libdl'; then echo "FAIL: non-system DLL dependency"; exit 1; fi
 
+      - name: Verify only Windows system DLLs for CLAP (copy-to-folder check)
+        run: |
+          CLAP=$(find third_party/bin -maxdepth 1 -type f -name '*.clap' | head -n 1)
+          echo "Checking $CLAP"
+          objdump -p "$CLAP" | grep 'DLL Name'
+          if objdump -p "$CLAP" | grep -iE 'libstdc|libgcc|libwinpthread|libspeexdsp|libdl'; then echo "FAIL: non-system DLL dependency"; exit 1; fi
+
       - name: Stage Windows bundle for upload
         run: |
           # Same staging rule as the Linux job: upload-artifact is
           # pointed at a dir whose only child is the bundle, so the
           # .vst3 folder survives — and the bundle is NOT pre-zipped,
           # or the download comes out double-zipped (Nov 6, 2026).
-          mkdir -p dist/windows-vst3
+          mkdir -p dist/windows-vst3 dist/windows-clap/models
           cp -r third_party/bin/NoiseOrdnance.vst3 dist/windows-vst3/
+          # CLAP is a single file: the file plus a models/ dir beside it.
+          cp third_party/bin/NoiseOrdnance.clap dist/windows-clap/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/windows-clap/models/
 
       - name: Upload Windows VST3 bundle
         uses: actions/upload-artifact@v4
         with:
           name: NoiseOrdnance-windows-vst3
           path: dist/windows-vst3
+
+      - name: Upload Windows CLAP bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-windows-clap
+          path: dist/windows-clap
