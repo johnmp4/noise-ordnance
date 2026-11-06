@@ -95,18 +95,36 @@ jobs:
 
       - name: Verify no dynamic speex dependency (copy-to-folder check)
         run: |
-          SO=$(find third_party/bin/NoiseOrdnance.vst3 -name '*.so' | head -n 1)
+          SO=$(find third_party/bin/NoiseOrdnance.vst3 -type f -name '*.so' | head -n 1)
           echo "Checking $SO"
           ldd "$SO"
           if ldd "$SO" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
           echo "glibc symbols required:"
           objdump -T "$SO" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 5
 
+      - name: Package Linux VST3 bundle
+        run: |
+          # upload-artifact zips a directory's CONTENTS, dropping the
+          # .vst3 folder itself — an extracted artifact then has no bundle
+          # for a host to recognize (first-run lesson, Nov 5, 2026: Ardour
+          # ignored the bare Contents/ + models/). Zip the bundle WITH its
+          # folder name, so extracting gives an install-ready .vst3.
+          python3 - <<'EOF'
+          import os, zipfile
+          src = 'third_party/bin/NoiseOrdnance.vst3'
+          out = 'third_party/bin/NoiseOrdnance-linux-vst3.zip'
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+              for root, _dirs, files in os.walk(src):
+                  for f in files:
+                      p = os.path.join(root, f)
+                      z.write(p, os.path.relpath(p, 'third_party/bin'))
+          EOF
+
       - name: Upload Linux VST3 bundle
         uses: actions/upload-artifact@v4
         with:
           name: NoiseOrdnance-linux-vst3
-          path: third_party/bin/NoiseOrdnance.vst3
+          path: third_party/bin/NoiseOrdnance-linux-vst3.zip
 
   windows-vst3:
     name: Windows VST3 (MSYS2 MinGW64, GNU Rust)
@@ -163,14 +181,29 @@ jobs:
 
       - name: Verify only Windows system DLLs (copy-to-folder check)
         run: |
-          VST3=$(find third_party/bin/NoiseOrdnance.vst3 -name '*.vst3' | head -n 1)
+          VST3=$(find third_party/bin/NoiseOrdnance.vst3 -type f -name '*.vst3' | head -n 1)
           echo "Checking $VST3"
           objdump -p "$VST3" | grep 'DLL Name'
           # Fail on any MinGW/speex runtime DLL a user would have to install.
           if objdump -p "$VST3" | grep -iE 'libstdc|libgcc|libwinpthread|libspeexdsp|libdl'; then echo "FAIL: non-system DLL dependency"; exit 1; fi
 
+      - name: Package Windows VST3 bundle
+        run: |
+          # Same .vst3-folder reason as the Linux job: zip the bundle WITH
+          # its folder name, so extracting gives an install-ready .vst3.
+          python3 - <<'EOF'
+          import os, zipfile
+          src = 'third_party/bin/NoiseOrdnance.vst3'
+          out = 'third_party/bin/NoiseOrdnance-windows-vst3.zip'
+          with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+              for root, _dirs, files in os.walk(src):
+                  for f in files:
+                      p = os.path.join(root, f)
+                      z.write(p, os.path.relpath(p, 'third_party/bin'))
+          EOF
+
       - name: Upload Windows VST3 bundle
         uses: actions/upload-artifact@v4
         with:
           name: NoiseOrdnance-windows-vst3
-          path: third_party/bin/NoiseOrdnance.vst3
+          path: third_party/bin/NoiseOrdnance-windows-vst3.zip
