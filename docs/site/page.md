@@ -80,4 +80,4 @@ The same recorded speech clip, with hiss and mains hum — first raw, then throu
 - Open source, MIT. Source, releases, and issues are linked below.
 - Runs at 128-sample blocks in Ardour and Carla: inference lives on a worker thread, so the audio thread stays clear of the model's deadline.
 - Tested, not just built: the unit suite covers block-size invariance, exact latency, model-switch races, and bypass alignment, and the drill suite gates hiss and hum on real speech, not tones.
-- Install today is a source build. Packaged releases for Linux and Windows are on the way.
+- Install today is a source build — build it, then `install.sh` puts the bundles where your host looks (Linux `~/.lv2` and `~/.vst3`; Windows `C:\Program Files\Common Files\VST3`). Packaged releases for Linux and Windows are on the way.

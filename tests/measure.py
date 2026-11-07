@@ -9,7 +9,7 @@ validate the RNNoise model itself (see ai-denoiser-spike-report.md):
   - noise floor  = mean RMS of the quietest 5% of 20 ms windows
   - speech peaks = 99th percentile of window RMS
   - sample count must match exactly (catches dropped/duplicated samples --
-    the bug class that starved the wet path in Oct 2026)
+    dropped samples starve the wet path, which then renders dry)
 
 A pure sine tone is NOT a valid test signal for this model: RNNoise is built
 to preserve tonal content, so a tone measures "no reduction" even when the

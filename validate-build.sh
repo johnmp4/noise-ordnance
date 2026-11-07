@@ -2,19 +2,24 @@
 # Copyright (c) 2026 John Peterman
 # SPDX-License-Identifier: MIT
 # validate-build.sh: run the build plus the full test set, in order.
-#   1. Plugin build: make (LV2 + VST3) + LV2 TTL generation. This mirrors
-#      the build portion of build-test-install.sh, minus its interactive
-#      install prompt -- validation should not block on a question.
+# This is the release build script: plain `make` builds every target
+# (LV2 + VST3), the built bundles carry the models, and every gated step
+# must pass -- a green run here produces shippable bundles. Non-interactive;
+# install separately with install.sh.
+#   1. Plugin build: make (LV2 + VST3) + LV2 TTL generation.
 #   2. tests/run_drills.sh -- audio drills (gated hiss + hum, report-only
 #      combo + quiet).
 #   3. tests/run-unit-tests.sh -- engine unit tests.
 #   4. tests/check-latency.py -- per-model latency vs the table, by
 #      speech cross-correlation (exact; needs denoise_wav from step 2).
-#   5. tests/lv2-smoke-test.sh -- LV2 bundle structure + discoverability.
-#   6. tests/param-contract.py -- 10 parameters vs the README table, from
+#   5. tests/lv2-smoke-test.sh -- LV2 bundle structure + discoverability
+#      (Linux only; LV2 is not shipped on Windows).
+#   6. tests/vst3-smoke-test.sh -- VST3 bundle structure (binary +
+#      models) on every platform; VST3 is the shipped format on both.
+#   7. tests/param-contract.py -- 10 parameters vs the README table, from
 #      the freshly generated TTL, plus the Low Latency switch toggle pin.
-#   7. tests/test-harness-settings.sh -- denoise_wav model/pfbeta/atten args.
-#   8. tests/check-pumping.sh -- window-RMS variance on processed quiet
+#   8. tests/test-harness-settings.sh -- denoise_wav model/pfbeta/atten args.
+#   9. tests/check-pumping.sh -- window-RMS variance on processed quiet
 #      (report-only by design; see that script for why it has no gate).
 # Exit 0 only if every gated step passes. Requires a full checkout: if
 # third_party/dpf or the libDF static library or the model files are
@@ -55,6 +60,11 @@ echo "=== validate-build: copying models into build bundles ==="
 mkdir -p third_party/bin/NoiseOrdnance.lv2/models third_party/bin/NoiseOrdnance.vst3/models
 cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
 cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+# CLAP is a single file, not a bundle: the models live in a
+# NoiseOrdnance/ folder next to the .clap file in the build output,
+# which is where the plugin looks for them (see NoiseOrdnance.cpp).
+mkdir -p third_party/bin/NoiseOrdnance/models
+cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance/models/
 
 echo "=== validate-build: audio drills ==="
 bash tests/run_drills.sh
@@ -66,7 +76,14 @@ echo "=== validate-build: latency check (speech correlation) ==="
 python3 tests/check-latency.py
 
 echo "=== validate-build: LV2 smoke test ==="
-bash tests/lv2-smoke-test.sh
+if [[ "$(uname -s)" == Linux* ]]; then
+  bash tests/lv2-smoke-test.sh
+else
+  echo "--- validate-build: LV2 smoke test skipped (LV2 is Linux-only in this project)"
+fi
+
+echo "=== validate-build: VST3 smoke test ==="
+bash tests/vst3-smoke-test.sh
 
 echo "=== validate-build: parameter contract ==="
 python3 tests/param-contract.py \

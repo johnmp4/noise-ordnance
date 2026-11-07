@@ -1,28 +1,22 @@
 // Copyright (c) 2026 John Peterman
 // SPDX-License-Identifier: MIT
 
-// Engine unit test: a long bypass must not misalign the stream
-// (Nov 1, 2026 bypass echo fix). Before the fix, processDfFrame
-// skipped inference entirely once bypass had settled (bypassed_ &&
-// mix_ == 0 && !deltaMonitor_), on the theory that wet multiplied
-// by zero is pure waste and the stream would restart cleanly.
-// Wrong: the gap corrupts DF's internal temporal state, and on
-// un-bypass the wet stream resumes ~70 ms early and stays shifted
-// until the next pipeline reset -- live, a bypass flip produced a
-// persistent phasey echo, cleared only by a model switch. Short
-// bypasses never triggered it because the mix needs ~112 ms to
-// settle to exactly 0 (exponential ramp stall-snap), so the skip
-// never engaged on a quick click.
+// Engine unit test: a long bypass must not misalign the stream.
+// Inference must keep running while bypassed: skipping it leaves a
+// gap in DF's internal temporal state, and on un-bypass the wet
+// stream resumes ~70 ms early and stays shifted until the next
+// pipeline reset -- a persistent phasey echo, cleared only by a
+// model switch. Short bypasses never trigger it because the mix
+// needs ~112 ms to settle to exactly 0 (exponential ramp
+// stall-snap), so the skip would never engage on a quick click.
 //   This test reproduces the live shape: one engine, worker on,
 // 128-blocks, full wet, bypass ON at 3 s and OFF at 6 s (long
-// enough for the skip to engage pre-fix), and asserts the final
-// steady window -- seconds after un-bypass, so no ramp transient
-// is inside it -- still correlates at exactly the model's latency.
-// Against the pre-fix engine it fails decisively (final corr
-// -0.002 at 5616, best lag 2576 at corr 1.000). It also pins the
+// enough for the gap to form), and asserts the final steady window
+// -- seconds after un-bypass, so no ramp transient is inside it --
+// still correlates at exactly the model's latency. It also pins the
 // bypass window itself: while bypass is settled the output must
-// be delayed dry (corr at 5616 near 1.0 on clean input), which the
-// fix preserves by discarding wet at mix_ == 0 instead of starving
+// be delayed dry (corr at 5616 near 1.0 on clean input), which holds
+// because the engine discards wet at mix_ == 0 instead of starving
 // the model.
 //   Pacing note: the audio thread drains the worker after EVERY
 // block (waitWorkerIdle), exactly like test-async and

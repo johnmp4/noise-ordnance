@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Peterman
 // SPDX-License-Identifier: MIT
 
-// Engine unit test: async inference (worker thread, Oct 31, 2026) must
+// Engine unit test: async inference (worker thread) must
 // produce bit-identical output to the synchronous path. Same input
 // (3 s of real speech + 1 s of trailing silence, block 512) through
 // two engines, one with the worker started and one without. The async
@@ -107,10 +107,21 @@ int main() {
 
   size_t differ = 0;
   float maxDiff = 0.0f;
+  size_t firstDiff = in.size();
+  // Per-second differ counts + max diff (4 x 1 s chunks): where the
+  // divergence starts and whether it grows or stays flat.
+  size_t chunkDiffer[4] = {0, 0, 0, 0};
+  float chunkMax[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   for (size_t i = 0; i < in.size(); ++i) {
     if (outSync[i] != outAsync[i]) {
+      if (firstDiff == in.size())
+        firstDiff = i;
       ++differ;
-      maxDiff = std::max(maxDiff, std::fabs(outSync[i] - outAsync[i]));
+      const float d = std::fabs(outSync[i] - outAsync[i]);
+      maxDiff = std::max(maxDiff, d);
+      const size_t c = i / 48000 < 4 ? i / 48000 : 3;
+      ++chunkDiffer[c];
+      chunkMax[c] = std::max(chunkMax[c], d);
     }
   }
   if (differ == 0 && frames > 0 && allFinite(outAsync)) {
@@ -123,5 +134,48 @@ int main() {
               "worker frames %llu, finite %d\n",
               differ, maxDiff, (unsigned long long)frames,
               (int)allFinite(outAsync));
+  // Diagnostics (printed on failure only): best-lag correlation
+  // between async and sync over the speech region (samples
+  // 10000..144000, past the startup transient), lags -1000..1000.
+  // A peak at lag != 0 with corr ~1 means the async stream is
+  // shifted (a dropped wet frame); a peak at lag 0 with corr ~1
+  // means the async output is the right signal with different
+  // content (dry fallback while the worker lags).
+  {
+    const size_t w0 = 10000, w1 = 144000;
+    double bestCorr = -2.0;
+    int bestLag = 0;
+    double corr0 = 0.0;
+    for (int lag = -1000; lag <= 1000; ++lag) {
+      double dot = 0.0, na = 0.0, nb = 0.0;
+      for (size_t i = w0; i < w1; ++i) {
+        const long j = static_cast<long>(i) - lag;
+        if (j < 0 || static_cast<size_t>(j) >= outSync.size())
+          continue;
+        const double a = outAsync[i];
+        const double b = outSync[static_cast<size_t>(j)];
+        dot += a * b;
+        na += a * a;
+        nb += b * b;
+      }
+      const double corr = (na > 0.0 && nb > 0.0)
+                              ? dot / std::sqrt(na * nb)
+                              : 0.0;
+      if (lag == 0)
+        corr0 = corr;
+      if (corr > bestCorr) {
+        bestCorr = corr;
+        bestLag = lag;
+      }
+    }
+    std::printf("  async-diag: first diff at sample %zu; per-second "
+                "differ/max: [%zu/%.3g %zu/%.3g %zu/%.3g %zu/%.3g]\n",
+                firstDiff, chunkDiffer[0], chunkMax[0], chunkDiffer[1],
+                chunkMax[1], chunkDiffer[2], chunkMax[2], chunkDiffer[3],
+                chunkMax[3]);
+    std::printf("  async-diag: best lag %+d corr %.4f (lag 0 corr %.4f) "
+                "over samples %zu..%zu\n",
+                bestLag, bestCorr, corr0, w0, w1);
+  }
   return 1;
 }

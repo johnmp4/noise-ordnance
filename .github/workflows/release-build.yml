@@ -1,0 +1,374 @@
+# Noise Ordnance — frozen release-build workflow
+#
+# Release binaries are built from a fixed environment, not a developer
+# machine, so the build is reproducible and the glibc floor is pinned.
+# GitHub Actions is free for a public repo and provides both runners.
+#
+# Status: TESTING on the `release-tooling` branch. The push trigger
+# below is TEMPORARY — it exists so the run fires on every push to this
+# branch while the workflow itself is being tested. REMOVE the
+# release-tooling push trigger before merging, and add the main
+# push/pull_request triggers at merge time (the workflow only belongs
+# on main once it is green and the branch is merged). workflow_dispatch
+# stays, for manual re-runs.
+#
+# What each runner pins, and why:
+#   - Linux: ubuntu-22.04 (glibc 2.35). A 22.04 binary runs on 22.04 AND
+#     everything newer; a 24.04 build (glibc 2.39) would exclude 22.04
+#     users. The glibc floor is what makes a binary built here run on
+#     the user's machine, once speex is static.
+#   - Windows: windows-latest (MS-hosted) + MSYS2 MinGW64. NOT MSVC:
+#     the project pins -std=gnu++17 and the Rust static lib must be
+#     the GNU host.
+#   - macOS: macos-15-intel (x86_64, macOS 15). Native Intel build, so
+#     cargo, the C++ compiler and the speexdsp build all target x86_64
+#     without cross-compiling. The 10.15 floor comes from
+#     MACOSX_DEPLOYMENT_TARGET, not the runner's OS version.
+#
+# Notes:
+#   - Rust on Windows: rustup defaults to the MSVC host, and an
+#     MSVC-built libdf.a cannot be linked by MinGW gcc. The step below
+#     installs rustup with --default-host x86_64-pc-windows-gnu inside
+#     the MSYS2 shell. rustup installs into the Windows profile
+#     (%USERPROFILE%\.cargo) while the MSYS2 shell's $HOME is
+#     /home/runneradmin — so cargo is put on PATH via cygpath, never
+#     via $HOME/.cargo/env. If that proves awkward, the alternative is
+#     MSYS2's own Rust package (mingw-w64-x86_64-rust), which is
+#     GNU-host by construction.
+#   - First libDF build downloads crates from crates.io and takes a
+#     while (tract is a large tree); allow ~2 GB disk. No caching is
+#     wired in yet — add actions/cache for ~/.cargo and the target dir
+#     only after the first green run.
+#   - Linux builds LV2, VST3 and CLAP; Windows and macOS build VST3
+#     and CLAP. LV2 TTLs are generated the same way validate-build.sh
+#     does, and tests/lv2-smoke-test.sh gates the LV2 artifact. CLAP is
+#     a single .clap file on Linux/Windows and a bundle on macOS, so
+#     the models ship in a NoiseOrdnance/ folder next to the plugin on
+#     every platform — not inside a bundle — and the plugin resolves
+#     them from that folder (see NoiseOrdnance.cpp). LV2 remains
+#     Linux-only.
+#   - macOS: the macos-15-intel runner is available until about August
+#     2027, after which the job will need to cross-compile x86_64 from
+#     an Apple Silicon runner or build universal. speexdsp is built
+#     from source as a static archive (Homebrew's is dynamic, which
+#     would break the copy-to-folder goal), and the Makefile's macOS
+#     branch points at that archive.
+#   - Packaging rule: upload-artifact zips a directory's CONTENTS, so
+#     it is pointed at a staging dir whose only child is the bundle —
+#     the bundle folder then survives the download. Never pre-zip the
+#     bundle first: upload-artifact zips again and the download comes
+#     out double-zipped.
+#   - The `ldd` / objdump checks below assert the copy-to-folder goal:
+#     no libspeexdsp.so on Linux, no non-system DLLs on Windows.
+#   - A green CI run does not replace loading the built plugin in a
+#     host and playing audio through it — that manual check still stands.
+
+name: Release build
+
+"on":
+  push:
+    branches: [release-tooling]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux VST3 + LV2 + CLAP (Ubuntu 22.04, glibc 2.35 floor)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libspeexdsp-dev git python3 curl tar
+          # libspeexdsp-dev ships the static archive the Makefile's
+          # -Bstatic speex wrap needs; without it the build fails loudly
+          # instead of silently shipping a dynamic dependency.
+
+      - name: Rust toolchain (Linux GNU host is the default)
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustc -vV
+
+      - name: Fetch third-party code, build libDF, download models
+        run: bash third_party/install-third-party.sh
+        # Clones DPF + DeepFilterNet (pinned), builds libdf.a, downloads
+        # the DeepFilterNet3 and DeepFilterNet3_ll model tarballs.
+
+      - name: Build LV2, VST3 and CLAP
+        run: make -j"$(nproc)"
+        # Plain make builds every target (lv2_sep + vst3 + clap). Portable CPU
+        # is the build-libdf.sh default (RUSTFLAGS '-C target-cpu=x86-64');
+        # Linux static speex and the Windows system-libs block live in
+        # the Makefile.
+
+      - name: Generate LV2 TTLs
+        run: |
+          # Same as validate-build.sh: LV2 TTLs are NOT generated by
+          # plain make, so compile DPF's generator once and run it over
+          # the build output. Without this the LV2 bundle has no
+          # manifest and no host will list it.
+          if [ ! -x third_party/dpf/utils/lv2_ttl_generator ]; then
+            cc third_party/dpf/utils/lv2-ttl-generator/lv2_ttl_generator.c -o third_party/dpf/utils/lv2_ttl_generator -ldl
+          fi
+          bash third_party/dpf/utils/generate-ttl.sh third_party/bin
+
+      - name: Bundle the models into the bundles
+        run: |
+          mkdir -p third_party/bin/NoiseOrdnance.vst3/models third_party/bin/NoiseOrdnance.lv2/models
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
+
+      - name: Verify no dynamic speex dependency (copy-to-folder check)
+        run: |
+          SO=$(find third_party/bin/NoiseOrdnance.vst3 -type f -name '*.so' | head -n 1)
+          echo "Checking $SO"
+          ldd "$SO"
+          if ldd "$SO" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
+          echo "glibc symbols required:"
+          objdump -T "$SO" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 5
+
+      - name: LV2 smoke test (bundle structure + models)
+        run: bash tests/lv2-smoke-test.sh
+        # Structure validation only (manifest, TTL, .so, both models);
+        # lv2ls is not installed on the runner, so the discoverability
+        # check is skipped. A host load test is still manual.
+
+      - name: Stage Linux bundles for upload
+        run: |
+          # upload-artifact zips a directory's CONTENTS, dropping the
+          # directory itself — so each bundle is staged as the only
+          # child of its own dir, and the bundle folder survives the
+          # download. Without the wrapper folder a host sees a bare
+          # Contents/ + models/ and ignores it. Do NOT pre-zip the
+          # bundle: upload-artifact zips again and the download comes
+          # out double-zipped.
+          mkdir -p dist/linux-vst3 dist/linux-lv2 dist/linux-clap/NoiseOrdnance/models
+          cp -r third_party/bin/NoiseOrdnance.vst3 dist/linux-vst3/
+          cp -r third_party/bin/NoiseOrdnance.lv2 dist/linux-lv2/
+          # CLAP is a single file, not a bundle: the file plus a
+          # NoiseOrdnance/models/ folder beside it (namespaced — a bare
+          # models/ dir in the shared CLAP folder could collide with
+          # another plugin's files).
+          cp third_party/bin/NoiseOrdnance.clap dist/linux-clap/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/linux-clap/NoiseOrdnance/models/
+
+      - name: CLAP smoke check (entry point + models)
+        run: |
+          CLAP=dist/linux-clap/NoiseOrdnance.clap
+          test -f "$CLAP"
+          nm -D --defined-only "$CLAP" | grep -q "clap_entry"
+          if ldd "$CLAP" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
+          test -f dist/linux-clap/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz
+          test -f dist/linux-clap/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz
+
+      - name: Upload Linux VST3 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-linux-vst3
+          path: dist/linux-vst3
+
+      - name: Upload Linux LV2 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-linux-lv2
+          path: dist/linux-lv2
+
+      - name: Upload Linux CLAP bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-linux-clap
+          path: dist/linux-clap
+
+  windows:
+    name: Windows VST3 + CLAP (MSYS2 MinGW64, GNU Rust)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install MSYS2 MinGW64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-speexdsp
+            mingw-w64-x86_64-dlfcn
+            git python curl tar
+          # dlfcn is the shim for the Makefile's unconditional -ldl flag
+          # (nothing in the plugin calls dlopen on Windows; DPF uses
+          # LoadLibrary there). msystem MINGW64 — not UCRT64.
+
+      - name: Rust toolchain, GNU host (NOT MSVC)
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host x86_64-pc-windows-gnu --default-toolchain stable
+          # rustup is a Windows binary: it installs into %USERPROFILE%\.cargo,
+          # NOT the MSYS2 $HOME (/home/runneradmin). Put cargo on PATH via the
+          # profile path instead of sourcing $HOME/.cargo/env, which does not
+          # exist here.
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+          rustc -vV
+          # The host line MUST read x86_64-pc-windows-gnu. An MSVC-host
+          # libdf.a cannot be linked by MinGW gcc.
+
+      - name: Fetch third-party code, build libDF, download models
+        run: |
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+          bash third_party/install-third-party.sh
+
+      - name: Build VST3 and CLAP
+        run: |
+          export PATH="$(cygpath -u "$USERPROFILE")/.cargo/bin:$PATH"
+          make vst3 clap
+
+      - name: Bundle the models into the .vst3
+        run: |
+          mkdir -p third_party/bin/NoiseOrdnance.vst3/models
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+
+      - name: Verify only Windows system DLLs (copy-to-folder check)
+        run: |
+          VST3=$(find third_party/bin/NoiseOrdnance.vst3 -type f -name '*.vst3' | head -n 1)
+          echo "Checking $VST3"
+          objdump -p "$VST3" | grep 'DLL Name'
+          # Fail on any MinGW/speex runtime DLL a user would have to install.
+          if objdump -p "$VST3" | grep -iE 'libstdc|libgcc|libwinpthread|libspeexdsp|libdl'; then echo "FAIL: non-system DLL dependency"; exit 1; fi
+
+      - name: Verify only Windows system DLLs for CLAP (copy-to-folder check)
+        run: |
+          CLAP=$(find third_party/bin -maxdepth 1 -type f -name '*.clap' | head -n 1)
+          echo "Checking $CLAP"
+          objdump -p "$CLAP" | grep 'DLL Name'
+          if objdump -p "$CLAP" | grep -iE 'libstdc|libgcc|libwinpthread|libspeexdsp|libdl'; then echo "FAIL: non-system DLL dependency"; exit 1; fi
+
+      - name: Stage Windows bundle for upload
+        run: |
+          # Same staging rule as the Linux job: upload-artifact is
+          # pointed at a dir whose only child is the bundle, so the
+          # .vst3 folder survives — and the bundle is NOT pre-zipped,
+          # or the download comes out double-zipped.
+          mkdir -p dist/windows-vst3 dist/windows-clap/NoiseOrdnance/models
+          cp -r third_party/bin/NoiseOrdnance.vst3 dist/windows-vst3/
+          # CLAP is a single file: the file plus a NoiseOrdnance/models/
+          # folder beside it (namespaced, as in the Linux job).
+          cp third_party/bin/NoiseOrdnance.clap dist/windows-clap/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/windows-clap/NoiseOrdnance/models/
+
+      - name: Upload Windows VST3 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-windows-vst3
+          path: dist/windows-vst3
+
+      - name: Upload Windows CLAP bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-windows-clap
+          path: dist/windows-clap
+
+  macos:
+    name: macOS VST3 + CLAP (macos-15-intel, 10.15 floor)
+    runs-on: macos-15-intel
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '10.15'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable
+          rustup default stable
+          rustc -vV
+          # The Intel runner's Rust host is x86_64-apple-darwin, so no
+          # --target is needed; MACOSX_DEPLOYMENT_TARGET (job env) pins
+          # the minimum OS version for the produced binary.
+
+      - name: Build speexdsp from source (static)
+        run: |
+          # Homebrew's speexdsp is a dynamic library, which would break
+          # the copy-to-folder goal, so build the static archive from
+          # the Xiph release tarball instead. Same 1.2.1 as the Linux
+          # job's distro package. The Makefile's macOS branch points at
+          # this install prefix.
+          curl -L -o /tmp/speexdsp-1.2.1.tar.gz https://downloads.xiph.org/releases/speex/speexdsp-1.2.1.tar.gz
+          tar -xzf /tmp/speexdsp-1.2.1.tar.gz -C /tmp
+          cd /tmp/speexdsp-1.2.1
+          ./configure --prefix="$HOME/speexdsp" --disable-shared --enable-static
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+          ls -l "$HOME/speexdsp/lib/libspeexdsp.a"
+
+      - name: Fetch third-party code, build libDF, download models
+        run: bash third_party/install-third-party.sh
+        # Clones DPF + DeepFilterNet (pinned), builds libdf.a, downloads
+        # the DeepFilterNet3 and DeepFilterNet3_ll model tarballs.
+
+      - name: Build VST3 and CLAP
+        run: make vst3 clap
+        # Plain make on the Intel runner builds native x86_64.
+        # MACOSX_DEPLOYMENT_TARGET=10.15 (job env) keeps the binaries
+        # loadable on macOS 10.15 Catalina and newer.
+
+      - name: Bundle the models into the .vst3
+        run: |
+          mkdir -p third_party/bin/NoiseOrdnance.vst3/models
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+
+      - name: Verify only system dylibs + 10.15 floor (copy-to-folder check)
+        run: |
+          VST3_BIN=$(find third_party/bin/NoiseOrdnance.vst3 -type f -name 'NoiseOrdnance' | head -n 1)
+          CLAP_BIN=$(find third_party/bin/NoiseOrdnance.clap -type f -name 'NoiseOrdnance' | head -n 1)
+          echo "Checking $VST3_BIN and $CLAP_BIN"
+          otool -L "$VST3_BIN"
+          otool -L "$CLAP_BIN"
+          # Fail on any Homebrew or bundled dynamic dependency: only
+          # /usr/lib and /System/Library are allowed.
+          if otool -L "$VST3_BIN" "$CLAP_BIN" | grep -E '/opt/homebrew|/usr/local/lib|libspeexdsp'; then echo "FAIL: non-system dylib dependency"; exit 1; fi
+          echo "Minimum OS version:"
+          otool -l "$VST3_BIN" | grep -A4 'LC_BUILD_VERSION' | grep minos
+          otool -l "$VST3_BIN" | grep -A4 'LC_BUILD_VERSION' | grep -q 'minos 10.15' || { echo "FAIL: VST3 minos is not 10.15"; exit 1; }
+          otool -l "$CLAP_BIN" | grep -A4 'LC_BUILD_VERSION' | grep -q 'minos 10.15' || { echo "FAIL: CLAP minos is not 10.15"; exit 1; }
+
+      - name: Stage macOS bundles for upload
+        run: |
+          # Same staging rule as the other jobs: upload-artifact is
+          # pointed at a dir whose only child is the bundle, so the
+          # bundle folder survives — and the bundle is NOT pre-zipped,
+          # or the download comes out double-zipped.
+          mkdir -p dist/macos-vst3 dist/macos-clap/NoiseOrdnance/models
+          cp -r third_party/bin/NoiseOrdnance.vst3 dist/macos-vst3/
+          # CLAP on macOS is a bundle, not a single file: the bundle
+          # plus a NoiseOrdnance/models/ folder beside it (namespaced,
+          # as on the other platforms).
+          cp -r third_party/bin/NoiseOrdnance.clap dist/macos-clap/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/macos-clap/NoiseOrdnance/models/
+
+      - name: macOS smoke check (bundles + models + entry point)
+        run: |
+          VST3=dist/macos-vst3/NoiseOrdnance.vst3
+          CLAP=dist/macos-clap/NoiseOrdnance.clap
+          test -d "$VST3" && test -d "$CLAP"
+          test -f "$VST3/models/DeepFilterNet3_onnx.tar.gz"
+          test -f "$VST3/models/DeepFilterNet3_ll_onnx.tar.gz"
+          CLAP_BIN=$(find "$CLAP" -type f -name 'NoiseOrdnance' | head -n 1)
+          nm -gU "$CLAP_BIN" | grep -q " _clap_entry"
+          test -f dist/macos-clap/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz
+          test -f dist/macos-clap/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz
+
+      - name: Upload macOS VST3 bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-macos-vst3
+          path: dist/macos-vst3
+
+      - name: Upload macOS CLAP bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoiseOrdnance-macos-clap
+          path: dist/macos-clap

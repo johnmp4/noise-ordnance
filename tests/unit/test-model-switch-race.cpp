@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 // Engine unit test: model switches under concurrent audio must not
-// crash or misalign the stream (Nov 1, 2026 race fix). Before the
-// fix, setModel() freed dfState_ from the UI thread while the audio
-// thread's sync fallback (worker down during the switch) could be
-// inside df_process_frame -- a multithreaded probe aborted in tract
-// on freed graph memory, and live the same race corrupted the stream
-// (the intermittent phasey echo) instead of crashing. The fix is a
-// reader-writer lock (stateMutex_): the audio thread takes shared
-// (try, never blocking) and the switch takes exclusive only for the
-// fast swap + pipeline reset.
+// crash or misalign the stream. setModel() and the audio thread share
+// dfState_: without protection the switch could free it while the
+// audio thread's sync fallback (worker down during the switch) is
+// inside df_process_frame, corrupting the stream or aborting in tract
+// on freed graph memory. The guard is a reader-writer lock
+// (stateMutex_): the audio thread takes shared (try, never blocking)
+// and the switch takes exclusive only for the fast swap + pipeline reset.
 //   This test reproduces the live shape: the audio thread processes
 // 128-blocks with the worker on while a second thread fires model
 // switches by block count, exactly like a host calling

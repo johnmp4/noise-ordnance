@@ -73,6 +73,14 @@ fi
 SPEEXDSP_CFLAGS="$(pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/include")"
 SPEEXDSP_LIBS="$(pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")"
 CXX="${CXX:-g++}"
+
+# On Windows (MSYS2/MinGW), linking the Rust staticlib needs the system
+# libs Rust's std uses (Winsock, NT native API, BCrypt, userenv) -- the
+# same set as the Makefile's Windows block. They must come after libdf.a.
+case "$(uname -s)" in
+  MINGW*|MSYS*) WIN_LIBS="-lws2_32 -lntdll -lbcrypt -luserenv" ;;
+  *) WIN_LIBS="" ;;
+esac
 echo "--- building denoise_wav ---"
 mkdir -p "$ROOT/tests/build"
 # shellcheck disable=SC2086
@@ -80,7 +88,7 @@ mkdir -p "$ROOT/tests/build"
   -I"$ROOT" -I"$ROOT/dsp" \
   $SPEEXDSP_CFLAGS \
   "$ROOT/tests/denoise_wav.cpp" "$ROOT/dsp/DenoiserEngine.cpp" \
-  -o "$ROOT/tests/build/denoise_wav" -lm $SPEEXDSP_LIBS -lpthread -ldl "$DF_LIB"
+  -o "$ROOT/tests/build/denoise_wav" -lm $SPEEXDSP_LIBS -lpthread -ldl "$DF_LIB" $WIN_LIBS
 
 BIN="$ROOT/tests/build/denoise_wav"
 MEASURE="python3 $ROOT/tests/measure.py"

@@ -17,9 +17,10 @@ Prerequisites: a C++17 toolchain, `make`, `pkg-config`, `git`, `python3`, and Sp
 
 ```bash
 bash third_party/install-third-party.sh   # clones DPF + DeepFilterNet (pinned), builds libDF, downloads models
-make                                      # LV2 + VST3 bundles land in third_party/bin/
-bash build-test-install.sh                # full build + regression tests + install prompt
+bash build-test-install.sh                # full pipeline: release build + full test set, then install
 ```
+
+The pipeline is three scripts: `validate-build.sh` is the release build (all targets plus the full test set, no install), `install.sh` installs already-built bundles (Linux `~/.lv2` + `~/.vst3`; Windows `C:\Program Files\Common Files\VST3`, with admin approval requested), and `debug.sh` is a quick debug build that asks whether to install after. `build-test-install.sh` just runs validate-build followed by install, in one command.
 
 Load the LV2 or VST3 bundle in your host. Model files are downloaded during the install step and copied into each bundle's `models/` directory — if the plugin loads but does nothing, check that directory first: a bundle without models runs dry passthrough by design.
 
@@ -83,13 +84,15 @@ Prerequisites: a C++17 toolchain, `make`, `pkg-config`, `git`, `python3` (for th
 
 ```bash
 bash third_party/install-third-party.sh   # clones DPF + DeepFilterNet (pinned), builds libDF, downloads models
-make                                      # LV2 + VST3 bundles land in third_party/bin/
-bash build-test-install.sh                # full build + regression tests + install prompt
+bash validate-build.sh                    # release build: all targets + full test set; bundles land in third_party/bin/
+bash install.sh                           # installs the built bundles
 ```
+
+The scripts, by role: `validate-build.sh` is the release build — plain `make` (LV2 + VST3), LV2 TTL generation, model copy into the bundles, then the full test set in order (drills, unit tests, latency, LV2 smoke, parameter contract, harness settings, pumping check). `install.sh` copies already-built bundles to the OS destinations (Linux `~/.lv2` + `~/.vst3`; Windows `C:\Program Files\Common Files\VST3`, VST3 only, asking for admin approval when the shell isn't elevated). `debug.sh` is the quick debug build with an install prompt after. `build-test-install.sh` is just validate-build followed by install, in one command.
 
 The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
 
-**Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests.
+**Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests; after the build it asks whether to install the built bundles (via `install.sh`).
 
 ## Testing
 

@@ -20,6 +20,7 @@ FILES_DSP = \
 
 TARGETS += lv2_sep
 TARGETS += vst3
+TARGETS += clap
 
 all: $(TARGETS)
 
@@ -28,14 +29,24 @@ include third_party/dpf/Makefile.plugins.mk
 # The plugin targets need the Rust static library first. (DPF's targets
 # are phony, so this prerequisite just orders the libDF build ahead of
 # the link -- it does not change what DPF builds.)
-lv2_sep vst3: $(DF_STATICLIB)
+lv2_sep vst3 clap: $(DF_STATICLIB)
 
 $(DF_STATICLIB):
 	bash third_party/build-libdf.sh
 
 SPEEXDSP_CFLAGS := $(shell pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/include")
 SPEEXDSP_LIBS := $(shell pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")
-ifneq ($(WINDOWS),true)
+ifeq ($(MACOS),true)
+# macOS: speexdsp is built from source in CI (see the workflow) and
+# installed as a static archive; pass the archive path directly.
+# macOS ld has no -Bstatic, and a Homebrew .dylib would break the
+# copy-to-folder goal. SPEEXDSP_PREFIX defaults to $HOME/speexdsp
+# (the CI install prefix) and can be overridden on the make command
+# line for a local build.
+SPEEXDSP_PREFIX ?= $(HOME)/speexdsp
+SPEEXDSP_CFLAGS := -I$(SPEEXDSP_PREFIX)/include
+SPEEXDSP_LIBS := $(SPEEXDSP_PREFIX)/lib/libspeexdsp.a
+else ifneq ($(WINDOWS),true)
 # Linux only: link speexdsp statically so the release bundle is
 # copy-to-folder with no libspeexdsp1 package needed on the user's
 # system. -Bstatic forces the archive choice (the linker otherwise
@@ -60,7 +71,12 @@ BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 # which is why they passed while the plugin build failed.)
 BUILD_CXX_FLAGS += -std=gnu++17
 # A Rust staticlib needs the pthread/dl libs for std on Linux.
+# macOS provides both in libSystem, so they are left out there.
+ifeq ($(MACOS),true)
+EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) $(DF_STATICLIB)
+else
 EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) -lpthread -ldl $(DF_STATICLIB)
+endif
 # A Rust staticlib needs these system libs for std on Windows: Winsock
 # (networking), NT native API, BCrypt (randomness) and userenv (user
 # profile directory). They must come after libdf.a in link order, which

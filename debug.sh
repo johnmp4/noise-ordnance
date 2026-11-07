@@ -6,8 +6,8 @@
 # Assumes third_party/ is already installed (DPF + libDF + model files --
 # run third_party/install-third-party.sh first if not).
 #
-# Builds with DEBUG=true (debug logging enabled, -g -O0), installs
-# LV2 + VST3 bundles to ~/.lv2 and ~/.vst3 without prompting.
+# Builds with DEBUG=true (debug logging enabled, -g -O0), then asks
+# whether to install the built bundles (via install.sh).
 # No tests: debug.sh is for quick testing only.
 #
 # Usage: bash debug.sh  (from the project root)
@@ -32,15 +32,23 @@ bash third_party/dpf/utils/generate-ttl.sh third_party/bin
 mkdir -p "$ROOT/third_party/bin/NoiseOrdnance.lv2/models" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models"
 cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.lv2/models/"
 cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models/"
+# CLAP is a single file, not a bundle: the models live in a
+# NoiseOrdnance/ folder next to the .clap file in the build output
+# (see NoiseOrdnance.cpp).
+mkdir -p "$ROOT/third_party/bin/NoiseOrdnance/models"
+cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance/models/"
 
-echo "=== Noise Ordnance: installing debug bundles ==="
-mkdir -p "$HOME/.lv2" "$HOME/.vst3"
-rm -rf "$HOME/.lv2/NoiseOrdnance.lv2" "$HOME/.vst3/NoiseOrdnance.vst3"
-cp -a "$ROOT/third_party/bin/NoiseOrdnance.lv2" "$HOME/.lv2/"
-cp -a "$ROOT/third_party/bin/NoiseOrdnance.vst3" "$HOME/.vst3/"
-
-echo "Installed:"
-ls -ld "$HOME/.lv2/NoiseOrdnance.lv2" "$HOME/.vst3/NoiseOrdnance.vst3"
+echo "=== Noise Ordnance: install? ==="
+printf 'Install the built bundles? [Y/n]: '
+read -r answer
+case "${answer:-Y}" in
+  [Yy]|[Yy][Ee][Ss])
+    bash install.sh
+    ;;
+  *)
+    echo "Install skipped."
+    ;;
+esac
 echo ""
 echo "=== done ==="
 echo "Debug logging (if any) writes to /tmp/no-debug.log"

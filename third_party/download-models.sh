@@ -14,11 +14,11 @@
 # into the plugin bundles' models/ directories, which is where the
 # plugin looks for them (after $NOISE_ORDNANCE_MODEL_DIR).
 #
-# Sizes below are the sizes recorded when this branch was created
-# (GitHub API, Oct 2026). A mismatch fails the download with a warning
-# -- it usually means the upstream file changed, in which case the
-# per-model latencies in dsp/DenoiserEngine.cpp must be re-measured
-# (see tests/latency-by-model.sh) before trusting the build.
+# Sizes below are the recorded sizes for these files. A mismatch fails
+# the download with a warning -- it usually means the upstream file
+# changed, in which case the per-model latencies in
+# dsp/DenoiserEngine.cpp must be re-measured (see
+# tests/latency-by-model.sh) before trusting the build.
 #
 # Usage: bash third_party/download-models.sh
 # Run from the project root (or anywhere: it resolves its own dir).
@@ -42,12 +42,21 @@ MODELS=(
 BASE="https://github.com/Rikorose/DeepFilterNet/raw/main/models"
 
 echo "=== Noise Ordnance: downloading DeepFilterNet models to $OUT ==="
+# Portable file size: GNU stat (Linux) takes -c%s, BSD stat (macOS)
+# takes -f%z.
+file_size() {
+  if [[ "$(uname -s)" == Darwin* ]]; then
+    stat -f%z "$1"
+  else
+    stat -c%s "$1"
+  fi
+}
 for entry in "${MODELS[@]}"; do
   name="${entry%% *}"
   expected="${entry##* }"
   dest="$OUT/$name"
   if [[ -f "$dest" ]]; then
-    actual="$(stat -c%s "$dest")"
+    actual="$(file_size "$dest")"
     if [[ "$actual" == "$expected" ]]; then
       echo "--- $name: already present, size OK ($actual bytes), skipping ---"
       continue
@@ -56,7 +65,7 @@ for entry in "${MODELS[@]}"; do
   fi
   echo "--- downloading $name ---"
   curl -L --fail -o "$dest" "$BASE/$name"
-  actual="$(stat -c%s "$dest")"
+  actual="$(file_size "$dest")"
   if [[ "$actual" != "$expected" ]]; then
     echo "WARNING: $name downloaded size $actual != expected $expected."
     echo "  Upstream may have changed the file. Re-measure per-model"
