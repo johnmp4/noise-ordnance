@@ -129,6 +129,20 @@ jobs:
           echo "glibc symbols required:"
           objdump -T "$SO" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 5
 
+      - name: Verify non-executable stack (PT_GNU_STACK)
+        run: |
+          # One of the linked objects has no .note.GNU-stack section,
+          # so without -Wl,-z,noexecstack the linker marks the stack
+          # executable (RWE) and hosts refuse to load the binaries.
+          # The Makefile forces a non-executable stack on Linux; this
+          # step proves it landed. readelf is in binutils, present on
+          # the runner.
+          for BIN in third_party/bin/NoiseOrdnance.lv2/NoiseOrdnance_dsp.so third_party/bin/NoiseOrdnance.vst3/Contents/x86_64-linux/NoiseOrdnance.so third_party/bin/NoiseOrdnance.clap; do
+            echo "Checking $BIN"
+            if readelf -W -l "$BIN" | grep -q 'GNU_STACK.*RWE'; then echo "FAIL: $BIN has an executable stack (PT_GNU_STACK RWE)"; exit 1; fi
+          done
+          echo "All three binaries have a non-executable stack"
+
       - name: LV2 smoke test (bundle structure + models)
         run: bash tests/lv2-smoke-test.sh
         # Structure validation only (manifest, TTL, .so, both models);
