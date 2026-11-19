@@ -70,6 +70,20 @@ BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 # after DPF's, so it wins. (The unit tests already build at C++17,
 # which is why they passed while the plugin build failed.)
 BUILD_CXX_FLAGS += -std=gnu++17
+# Linux only: force a non-executable stack on the plugin binaries.
+# One of the linked objects has no .note.GNU-stack section (the Rust
+# libDF static library is the likeliest source), so the linker marks
+# the stack executable (PT_GNU_STACK RWE) and hosts then refuse to
+# load the binaries: "cannot enable executable stack as shared object
+# requires: Invalid argument". -z noexecstack overrides that at link
+# time (the same thing execstack -c does after the fact). The macOS
+# and Windows linkers do not understand -z, so this stays Linux-only.
+# The CI Linux job verifies the result with readelf.
+ifneq ($(MACOS),true)
+ifneq ($(WINDOWS),true)
+LDFLAGS += -Wl,-z,noexecstack
+endif
+endif
 # A Rust staticlib needs the pthread/dl libs for std on Linux.
 # macOS provides both in libSystem, so they are left out there.
 ifeq ($(MACOS),true)
