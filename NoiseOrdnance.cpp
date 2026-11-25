@@ -219,8 +219,10 @@ public:
     //   1. $NOISE_ORDNANCE_MODEL_DIR (tests, harness, manual runs)
     //   2. <bundle>/models/ (installed LV2/VST3 bundles; the install
     //      scripts copy the tarballs there). For CLAP the bundle path
-    //      is the .clap file itself, so the models live in models/
-    //      next to the file instead.
+    //      is the .clap file itself, so the models live in a
+    //      NoiseOrdnance/ folder next to the file, namespaced so it
+    //      can't collide with other plugins' files in the shared
+    //      CLAP directory.
     // If neither yields a loadable file, the engines run dry
     // passthrough (no crash) until a valid directory appears.
     std::string modelDir;
@@ -232,15 +234,17 @@ public:
       if (bundle != nullptr && bundle[0] != '\0') {
         std::string bundleStr(bundle);
         // DPF reports the CLAP bundle path as the .clap file itself;
-        // models/ lives beside the file, not inside it.
+        // the models live in a NoiseOrdnance/ folder beside the file.
         static const std::string kClapExt = ".clap";
         if (bundleStr.size() > kClapExt.size() &&
             bundleStr.compare(bundleStr.size() - kClapExt.size(), kClapExt.size(), kClapExt) == 0) {
           const auto slash = bundleStr.find_last_of("/\\");
           if (slash != std::string::npos)
             bundleStr = bundleStr.substr(0, slash);
+          modelDir = bundleStr + "/NoiseOrdnance/models";
+        } else {
+          modelDir = bundleStr + "/models";
         }
-        modelDir = bundleStr + "/models";
       }
     }
     const int model = params[4] > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3;
