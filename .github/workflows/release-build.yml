@@ -49,9 +49,9 @@
 #     macOS builds VST3. LV2 TTLs are generated the same way
 #     validate-build.sh does, and tests/lv2-smoke-test.sh gates the
 #     LV2 artifact. CLAP is a single .clap file, so the models ship in
-#     a NoiseOrdnance/ folder next to the file — not inside a bundle —
-#     and the plugin resolves them from that folder (see
-#     NoiseOrdnance.cpp). LV2 remains Linux-only.
+#     a models/ folder next to the file — not inside a bundle — and
+#     the plugin resolves them from that folder (see NoiseOrdnance.cpp).
+#     LV2 remains Linux-only.
 #   - macOS: the macos-15-intel runner is available until about August
 #     2027, after which the job will need to cross-compile x86_64 from
 #     an Apple Silicon runner or build universal. speexdsp is built
@@ -163,15 +163,13 @@ jobs:
           # Contents/ + models/ and ignores it. Do NOT pre-zip the
           # bundle: upload-artifact zips again and the download comes
           # out double-zipped.
-          mkdir -p dist/linux-vst3 dist/linux-lv2 dist/linux-clap/NoiseOrdnance/models
+          mkdir -p dist/linux-vst3 dist/linux-lv2 dist/linux-clap/models
           cp -r third_party/bin/NoiseOrdnance.vst3 dist/linux-vst3/
           cp -r third_party/bin/NoiseOrdnance.lv2 dist/linux-lv2/
           # CLAP is a single file, not a bundle: the file plus a
-          # NoiseOrdnance/models/ folder beside it (namespaced — a bare
-          # models/ dir in the shared CLAP folder could collide with
-          # another plugin's files).
+          # models/ dir beside it (not inside a bundle).
           cp third_party/bin/NoiseOrdnance.clap dist/linux-clap/
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/linux-clap/NoiseOrdnance/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/linux-clap/models/
 
       - name: CLAP smoke check (entry point + models)
         run: |
@@ -179,8 +177,8 @@ jobs:
           test -f "$CLAP"
           nm -D --defined-only "$CLAP" | grep -q "clap_entry"
           if ldd "$CLAP" | grep -i speex; then echo "FAIL: still links speex dynamically"; exit 1; fi
-          test -f dist/linux-clap/NoiseOrdnance/models/DeepFilterNet3_onnx.tar.gz
-          test -f dist/linux-clap/NoiseOrdnance/models/DeepFilterNet3_ll_onnx.tar.gz
+          test -f dist/linux-clap/models/DeepFilterNet3_onnx.tar.gz
+          test -f dist/linux-clap/models/DeepFilterNet3_ll_onnx.tar.gz
 
       - name: Upload Linux VST3 bundle
         uses: actions/upload-artifact@v4
@@ -272,12 +270,11 @@ jobs:
           # pointed at a dir whose only child is the bundle, so the
           # .vst3 folder survives — and the bundle is NOT pre-zipped,
           # or the download comes out double-zipped.
-          mkdir -p dist/windows-vst3 dist/windows-clap/NoiseOrdnance/models
+          mkdir -p dist/windows-vst3 dist/windows-clap/models
           cp -r third_party/bin/NoiseOrdnance.vst3 dist/windows-vst3/
-          # CLAP is a single file: the file plus a NoiseOrdnance/models/
-          # folder beside it (namespaced, as in the Linux job).
+          # CLAP is a single file: the file plus a models/ dir beside it.
           cp third_party/bin/NoiseOrdnance.clap dist/windows-clap/
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/windows-clap/NoiseOrdnance/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz dist/windows-clap/models/
 
       - name: Upload Windows VST3 bundle
         uses: actions/upload-artifact@v4
