@@ -14,9 +14,7 @@
 #            Windows; the script requests administrator approval via
 #            UAC when the shell is not elevated)
 #   macOS:   NoiseOrdnance.vst3 -> ~/Library/Audio/Plug-Ins/VST3
-#            NoiseOrdnance.clap -> ~/Library/Audio/Plug-Ins/CLAP
-#            (models -> ~/Library/Audio/Plug-Ins/CLAP/NoiseOrdnance/models;
-#            LV2 is not installed on macOS)
+#            (LV2 is not installed on macOS)
 #
 # Usage: bash install.sh  (from the project root)
 
@@ -97,12 +95,11 @@ case "$(uname -s)" in
     echo "Note: LV2 is not installed on Windows (Linux-only in this project)."
     ;;
   Darwin*)
-    if [[ ! -d "$VST3_SRC" || ! -d "$CLAP_SRC" ]]; then
-      echo "FAIL install: built VST3/CLAP bundles not found in third_party/bin -- run validate-build.sh or debug.sh first"
+    if [[ ! -d "$VST3_SRC" ]]; then
+      echo "FAIL install: built VST3 bundle not found in third_party/bin -- run validate-build.sh or debug.sh first"
       exit 1
     fi
     install_one "$VST3_SRC" "$HOME/Library/Audio/Plug-Ins/VST3"
-    install_clap "$CLAP_SRC" "$MODELS_SRC" "$HOME/Library/Audio/Plug-Ins/CLAP"
     echo "Note: LV2 is not installed on macOS (Linux-only in this project)."
     ;;
   *)
