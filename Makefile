@@ -20,6 +20,7 @@ FILES_DSP = \
 
 TARGETS += lv2_sep
 TARGETS += vst3
+TARGETS += clap
 
 all: $(TARGETS)
 
@@ -28,7 +29,7 @@ include third_party/dpf/Makefile.plugins.mk
 # The plugin targets need the Rust static library first. (DPF's targets
 # are phony, so this prerequisite just orders the libDF build ahead of
 # the link -- it does not change what DPF builds.)
-lv2_sep vst3: $(DF_STATICLIB)
+lv2_sep vst3 clap: $(DF_STATICLIB)
 
 $(DF_STATICLIB):
 	bash third_party/build-libdf.sh
