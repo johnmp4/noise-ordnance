@@ -7,6 +7,7 @@
 #define DISTRHO_PLUGIN_NAME    "Noise Ordnance"
 #define DISTRHO_PLUGIN_LABEL   "noise_ordnance"
 #define DISTRHO_PLUGIN_URI     "https://plugins.johnpeterman.me/noise-ordnance"
+#define DISTRHO_PLUGIN_CLAP_ID "me.johnpeterman.noise-ordnance"
 #define DISTRHO_PLUGIN_HOMEPAGE "https://plugins.johnpeterman.me/noise-ordnance"
 #define DISTRHO_PLUGIN_LV2_CATEGORY "lv2:DynamicsPlugin"
 #define DISTRHO_PLUGIN_VST3_CATEGORIES "Fx|Dynamics"
