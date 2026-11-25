@@ -181,13 +181,24 @@ public:
         }
         break;
       case 4:
-        // Synchronous model reload (test branch: load time is not a
-        // concern). Switch ON = low-latency model, OFF = post-production
-        // model. Different models have different latencies, so the
-        // host must be told the new value.
-        if (engineL.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3))
-          engineR.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3);
-        setLatency(engineL.latencySamples());
+        // Model switch. Switch ON = low-latency model, OFF =
+        // post-production model. Different models have different
+        // latencies, so the host must be told the new value -- but
+        // only when the switch actually happens.
+        //
+        // setModel() loads the ONNX graph synchronously (seconds),
+        // and hosts deliver parameter changes on the audio thread
+        // during processing, so a live switch freezes audio in every
+        // format. While active, only record the selection (params[4]
+        // is already stored above); activate() loads the selected
+        // model and reports its latency, so the switch takes effect
+        // at the next activation. While inactive no audio thread is
+        // running, so the switch can happen immediately.
+        if (!active_.load()) {
+          if (engineL.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3))
+            engineR.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3);
+          setLatency(engineL.latencySamples());
+        }
         break;
       case 5:
         engineL.setReduction(value / 100.0f);
@@ -215,6 +226,10 @@ public:
   }
 
   void activate() override {
+    // From here until deactivate(), a parameter change may arrive on
+    // the audio thread, so the model switch in setParameterValue
+    // defers to the next activation instead of loading live.
+    active_.store(true);
     // Model files resolve in this order:
     //   1. $NOISE_ORDNANCE_MODEL_DIR (tests, harness, manual runs)
     //   2. <bundle>/models/ (installed LV2/VST3 bundles; the install
@@ -266,6 +281,7 @@ public:
   void deactivate() override {
     engineL.stopWorker();
     engineR.stopWorker();
+    active_.store(false);
   }
 
   void run(const float** inputs, float** outputs, uint32_t frames) override {
@@ -279,6 +295,12 @@ public:
 private:
   DenoiserEngine engineL;
   DenoiserEngine engineR;
+  // True between activate() and deactivate(). setParameterValue reads
+  // it to decide whether a model switch is safe to run now (inactive)
+  // or must wait for the next activation (active). Atomic because
+  // setParameterValue can run on the audio thread while activate() /
+  // deactivate() run on the host's main thread.
+  std::atomic<bool> active_{false};
   // Order: Bypass, In Trim, Hum Filter, Hum Freq, Low Latency, Reduction,
   // Aggressiveness, Postfilter, Delta, Out Trim.
   float params[10] = {0.0f, 0.0f, 0.0f, 60.0f, 0.0f, 100.0f, 100.0f, 0.02f, 0.0f, 0.0f};
