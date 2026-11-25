@@ -20,6 +20,12 @@
 #   - Windows: windows-latest (MS-hosted) + MSYS2 MinGW64. NOT MSVC:
 #     the project pins -std=gnu++17 and the Rust static lib must be
 #     the GNU host.
+#   - Rust: pinned to 1.99.1 on all three jobs. Rust 1.100.0 broke the
+#     Windows link (Nov 19): std's Windows futex code started using
+#     WaitOnAddress / WakeByAddressSingle / WakeByAddressAll and MinGW
+#     has no import library for them, so linking libdf.a failed with
+#     47 undefined references. Do NOT float "stable" here — a toolchain
+#     bump is a deliberate change, verified by a full green run.
 #   - macOS: macos-15-intel (x86_64, macOS 15). Native Intel build, so
 #     cargo, the C++ compiler and the speexdsp build all target x86_64
 #     without cross-compiling. The 10.15 floor comes from
@@ -87,8 +93,8 @@ jobs:
 
       - name: Rust toolchain (Linux GNU host is the default)
         run: |
-          rustup toolchain install stable
-          rustup default stable
+          rustup toolchain install 1.99.1
+          rustup default 1.99.1
           rustc -vV
 
       - name: Fetch third-party code, build libDF, download models
@@ -221,7 +227,7 @@ jobs:
 
       - name: Rust toolchain, GNU host (NOT MSVC)
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host x86_64-pc-windows-gnu --default-toolchain stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-host x86_64-pc-windows-gnu --default-toolchain 1.99.1
           # rustup is a Windows binary: it installs into %USERPROFILE%\.cargo,
           # NOT the MSYS2 $HOME (/home/runneradmin). Put cargo on PATH via the
           # profile path instead of sourcing $HOME/.cargo/env, which does not
@@ -296,8 +302,8 @@ jobs:
 
       - name: Rust toolchain
         run: |
-          rustup toolchain install stable
-          rustup default stable
+          rustup toolchain install 1.99.1
+          rustup default 1.99.1
           rustc -vV
           # The Intel runner's Rust host is x86_64-apple-darwin, so no
           # --target is needed; MACOSX_DEPLOYMENT_TARGET (job env) pins
