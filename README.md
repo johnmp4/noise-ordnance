@@ -11,7 +11,7 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 
 ## Install
 
-Today, install is a source build. Release builds are produced by CI (GitHub Actions) for Linux, Windows, and macOS; packaged releases are on the way.
+Today, install is a source build. Release builds are produced by CI (GitHub Actions) for Linux, Windows, and macOS.
 
 Prerequisites: a C++17 toolchain, `make`, `pkg-config`, `git`, `python3`, and SpeexDSP (`libspeexdsp-dev` on Debian/Ubuntu). The install script sets up a project-local Rust toolchain for you if `cargo` isn't already available.
 
