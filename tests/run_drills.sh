@@ -40,7 +40,7 @@ mkdir -p "$OUT"
 
 # --- models: required to run (a missing model must fail, not pass dry) ---
 MODEL_DIR="${NOISE_ORDNANCE_MODEL_DIR:-$ROOT/third_party/models}"
-for f in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+for f in DeepFilterNet3_onnx.tar.gz; do
   if [[ ! -f "$MODEL_DIR/$f" ]]; then
     echo "FAIL: model file missing: $MODEL_DIR/$f"
     echo "  Run: bash third_party/download-models.sh"

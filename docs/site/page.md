@@ -29,13 +29,10 @@ controls over how hard it works, and a monitor that lets you hear
 exactly what's being removed.
 
 Built on [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet),
-with DF3 as the default model and DF3_ll on a Low Latency Model
-switch. A traditional notch-filter bank handles mains hum ahead of
-the model. Latency is reported to the host for delay compensation:
-5616 samples (117 ms) for DF3, which uses lookahead to do its best
-work, and 4656 samples (97 ms) for the Low Latency Model, which
-drops the lookahead for a 20 ms shorter delay, on tracks you have
-already recorded.
+running DF3, the post-production model. A traditional notch-filter
+bank handles mains hum ahead of the model. Latency is reported to
+the host for delay compensation: 5616 samples (117 ms), from the
+model's lookahead, on tracks you have already recorded.
 
 Tune it by ear: enable Delta Monitor, set Aggressiveness to full,
 and listen to what's being removed. Lower Aggressiveness until the
@@ -79,5 +76,5 @@ The same recorded speech clip, with hiss and mains hum — first raw, then throu
 
 - Open source, MIT. Source, releases, and issues are linked below.
 - Runs at 128-sample blocks in Ardour and Carla: inference lives on a worker thread, so the audio thread stays clear of the model's deadline.
-- Tested, not just built: the unit suite covers block-size invariance, exact latency, model-switch races, and bypass alignment, and the drill suite gates hiss and hum on real speech, not tones.
+- Tested, not just built: the unit suite covers block-size invariance, exact latency, and bypass alignment, and the drill suite gates hiss and hum on real speech, not tones.
 - Install today is a source build — build it, then `install.sh` puts the bundles where your host looks (Linux `~/.lv2` and `~/.vst3`; Windows `C:\Program Files\Common Files\VST3`). Release builds are produced by CI for Linux, Windows, and macOS.

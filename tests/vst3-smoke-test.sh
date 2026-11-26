@@ -51,9 +51,9 @@ fail() { echo "FAIL vst3-smoke: $1"; exit 1; }
 
 echo "--- vst3-smoke: bundle structure OK ($BUNDLE)"
 
-for model in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+for model in DeepFilterNet3_onnx.tar.gz; do
   [[ -f "$BUNDLE/models/$model" ]] || fail "bundle is missing models/$model (a bundle without models runs dry)"
 done
-echo "--- vst3-smoke: both model tarballs present in models/"
+echo "--- vst3-smoke: model tarball present in models/"
 
 echo "PASS vst3-smoke: $BUNDLE is well-formed"

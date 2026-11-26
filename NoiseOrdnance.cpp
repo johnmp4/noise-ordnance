@@ -9,21 +9,18 @@
 
 START_NAMESPACE_DISTRHO
 
-// Model selection is a boolean switch, not a dropdown: with only two
-// loadable models, a toggle is clearer than an enum whose values a host
-// may render unlabeled. OFF (0) = DeepFilterNet3, the post-production
-// model (default); ON (1) = DeepFilterNet3 Low Latency (no lookahead).
-// The mapping lives here, in the plugin: the engine still takes a model
-// index (DenoiserEngine::kModelDF3 / kModelDF3LL), and the harness and
-// unit tests still address models by index directly. DeepFilterNet2
-// is not offered: it does not load (see DenoiserEngine.hpp).
-// If a third loadable model ever appears, this switch should become an
-// enumeration again -- a toggle cannot express three choices.
+// Single model: DeepFilterNet3, the post-production model with
+// lookahead. A low-latency variant (DeepFilterNet3 Low Latency, no
+// lookahead, 20 ms less delay) is deliberately not offered: the 20 ms
+// does not change any use case this plugin targets, and the variant
+// costs about twice the CPU and 4.5x the download size.
+// DeepFilterNet2 is not offered either: it does not load
+// (see DenoiserEngine.hpp).
 
 class NoiseOrdnance : public Plugin {
 public:
   NoiseOrdnance()
-    : Plugin(10 /* params */, 0 /* programs */, 0 /* states */)
+    : Plugin(9 /* params */, 0 /* programs */, 0 /* states */)
   {
     // NOTE: engines are deliberately NOT init()'d here. TTL generation
     // instantiates the plugin without activating it, and init() loads a
@@ -41,9 +38,8 @@ public:
   // parameters group in flat lists (Carla stacks all parameters in port
   // order). Ardour separates switches from sliders but preserves each
   // subsequence, so its two-column layout pairs the same groups:
-  //   Bypass, Input Trim, Hum Filter, Hum Freq, Low Latency Model,
-  //   Reduction, Aggressiveness, Postfilter Strength, Delta Monitor,
-  //   Output Trim
+  //   Bypass, Input Trim, Hum Filter, Hum Freq, Reduction,
+  //   Aggressiveness, Postfilter Strength, Delta Monitor, Output Trim
   // Symbols are the stable automation IDs: only display names changed
   // (Mains Freq -> Hum Freq, Attenuation Limit -> Aggressiveness,
   // Post Filter Beta -> Postfilter Strength).
@@ -84,18 +80,6 @@ public:
         param.unit = "Hz";
         break;
       case 4:
-        // Low Latency Model switch: OFF = DeepFilterNet3 (post-production,
-        // default), ON = DeepFilterNet3 Low Latency (no lookahead). A
-        // boolean renders as a labeled toggle in hosts instead of an
-        // enum that may show up as an unlabeled binary switch.
-        param.hints = kParameterIsAutomatable | kParameterIsBoolean;
-        param.name = "Low Latency Model";
-        param.symbol = "low_latency";
-        param.ranges.def = 0.0f;
-        param.ranges.min = 0.0f;
-        param.ranges.max = 1.0f;
-        break;
-      case 5:
         param.hints = kParameterIsAutomatable;
         param.name = "Reduction";
         param.symbol = "reduction";
@@ -104,7 +88,7 @@ public:
         param.ranges.max = 100.0f;
         param.unit = "%";
         break;
-      case 6:
+      case 5:
         // Aggressiveness: the attenuation limit, renamed for direction.
         // The value is still max attenuation in dB: 0 = no attenuation
         // allowed, 100 = no cap. Right = the model cuts deeper.
@@ -116,7 +100,7 @@ public:
         param.ranges.max = 100.0f;
         param.unit = "dB";
         break;
-      case 7:
+      case 6:
         // Postfilter Strength: the post-filter beta, renamed so the
         // control reads as a strength. 0 = post-filter off.
         param.hints = kParameterIsAutomatable;
@@ -126,7 +110,7 @@ public:
         param.ranges.min = 0.0f;
         param.ranges.max = 0.05f;
         break;
-      case 8:
+      case 7:
         param.hints = kParameterIsAutomatable | kParameterIsBoolean;
         param.name = "Delta Monitor";
         param.symbol = "delta_monitor";
@@ -134,7 +118,7 @@ public:
         param.ranges.min = 0.0f;
         param.ranges.max = 1.0f;
         break;
-      case 9:
+      case 8:
         param.hints = kParameterIsAutomatable;
         param.name = "Output Trim";
         param.symbol = "output_trim";
@@ -149,13 +133,13 @@ public:
   }
 
   float getParameterValue(uint32_t index) const override {
-    if (index < 10)
+    if (index < 9)
       return params[index];
     return 0.0f;
   }
 
   void setParameterValue(uint32_t index, float value) override {
-    if (index >= 10)
+    if (index >= 9)
       return;
 
     params[index] = value;
@@ -181,31 +165,22 @@ public:
         }
         break;
       case 4:
-        // Synchronous model reload (test branch: load time is not a
-        // concern). Switch ON = low-latency model, OFF = post-production
-        // model. Different models have different latencies, so the
-        // host must be told the new value.
-        if (engineL.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3))
-          engineR.setModel(value > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3);
-        setLatency(engineL.latencySamples());
-        break;
-      case 5:
         engineL.setReduction(value / 100.0f);
         engineR.setReduction(value / 100.0f);
         break;
-      case 6:
+      case 5:
         engineL.setAttenLim(value);
         engineR.setAttenLim(value);
         break;
-      case 7:
+      case 6:
         engineL.setPostFilterBeta(value);
         engineR.setPostFilterBeta(value);
         break;
-      case 8:
+      case 7:
         engineL.setDeltaMonitor(value > 0.5f);
         engineR.setDeltaMonitor(value > 0.5f);
         break;
-      case 9:
+      case 8:
         engineL.setOutputTrim(value);
         engineR.setOutputTrim(value);
         break;
@@ -218,7 +193,7 @@ public:
     // Model files resolve in this order:
     //   1. $NOISE_ORDNANCE_MODEL_DIR (tests, harness, manual runs)
     //   2. <bundle>/models/ (installed LV2/VST3 bundles; the install
-    //      scripts copy the tarballs there)
+    //      scripts copy the model tarball there)
     // If neither yields a loadable file, the engines run dry
     // passthrough (no crash) until a valid directory appears.
     std::string modelDir;
@@ -230,27 +205,27 @@ public:
       if (bundle != nullptr && bundle[0] != '\0')
         modelDir = std::string(bundle) + "/models";
     }
-    const int model = params[4] > 0.5f ? DenoiserEngine::kModelDF3LL : DenoiserEngine::kModelDF3;
-    engineL.init(getSampleRate(), modelDir, model);
-    engineR.init(getSampleRate(), modelDir, model);
-    // Re-apply parameters (init resets engine state; the model itself
-    // was just loaded from params[4], so it is not re-selected here).
+    // Single model: DeepFilterNet3, the post-production model with
+    // lookahead. No model switch, so there is nothing to re-select.
+    engineL.init(getSampleRate(), modelDir, DenoiserEngine::kModelDF3);
+    engineR.init(getSampleRate(), modelDir, DenoiserEngine::kModelDF3);
+    // Re-apply parameters (init resets engine state).
     engineL.setBypassed(params[0] > 0.5f);
     engineR.setBypassed(params[0] > 0.5f);
     engineL.setInputTrim(params[1]);
     engineR.setInputTrim(params[1]);
     engineL.setHum(params[2] > 0.5f, params[3] >= 55.0f ? 60.0f : 50.0f);
     engineR.setHum(params[2] > 0.5f, params[3] >= 55.0f ? 60.0f : 50.0f);
-    engineL.setReduction(params[5] / 100.0f);
-    engineR.setReduction(params[5] / 100.0f);
-    engineL.setAttenLim(params[6]);
-    engineR.setAttenLim(params[6]);
-    engineL.setPostFilterBeta(params[7]);
-    engineR.setPostFilterBeta(params[7]);
-    engineL.setDeltaMonitor(params[8] > 0.5f);
-    engineR.setDeltaMonitor(params[8] > 0.5f);
-    engineL.setOutputTrim(params[9]);
-    engineR.setOutputTrim(params[9]);
+    engineL.setReduction(params[4] / 100.0f);
+    engineR.setReduction(params[4] / 100.0f);
+    engineL.setAttenLim(params[5]);
+    engineR.setAttenLim(params[5]);
+    engineL.setPostFilterBeta(params[6]);
+    engineR.setPostFilterBeta(params[6]);
+    engineL.setDeltaMonitor(params[7] > 0.5f);
+    engineR.setDeltaMonitor(params[7] > 0.5f);
+    engineL.setOutputTrim(params[8]);
+    engineR.setOutputTrim(params[8]);
     setLatency(engineL.latencySamples());
     // Async inference: from here on, DF frames run on a worker thread
     // per channel, and the audio thread only resamples, shuffles
@@ -279,9 +254,9 @@ public:
 private:
   DenoiserEngine engineL;
   DenoiserEngine engineR;
-  // Order: Bypass, In Trim, Hum Filter, Hum Freq, Low Latency, Reduction,
+  // Order: Bypass, In Trim, Hum Filter, Hum Freq, Reduction,
   // Aggressiveness, Postfilter, Delta, Out Trim.
-  float params[10] = {0.0f, 0.0f, 0.0f, 60.0f, 0.0f, 100.0f, 100.0f, 0.02f, 0.0f, 0.0f};
+  float params[9] = {0.0f, 0.0f, 0.0f, 60.0f, 100.0f, 100.0f, 0.02f, 0.0f, 0.0f};
 
   DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(NoiseOrdnance)
 };
