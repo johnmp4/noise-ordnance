@@ -2,14 +2,12 @@
 # Copyright (c) 2026 John Peterman
 # SPDX-License-Identifier: MIT
 # Harness settings test: proves tests/build/denoise_wav actually honors its
-# DeepFilterNet arguments (model, post-filter beta, attenuation limit),
+# DeepFilterNet arguments (post-filter beta, attenuation limit),
 # instead of silently ignoring them.
-#   1. Runs the hiss drill three ways: defaults (model 0, pfbeta 0.02,
-#      atten 100), tuned (pfbeta 0.05, atten 50), and model 1
-#      (DeepFilterNet3 Low Latency, defaults otherwise).
-#   2. The tuned run and the model-1 run must each differ from the
-#      default run -- if the args were ignored, the outputs would be
-#      identical and this fails.
+#   1. Runs the hiss drill two ways: defaults (pfbeta 0.02, atten 100)
+#      and tuned (pfbeta 0.05, atten 50).
+#   2. The tuned run must differ from the default run -- if the args
+#      were ignored, the outputs would be identical and this fails.
 #   3. The tuned run must still denoise sanely (same gates as the hiss
 #      drill: >= 20 dB floor reduction, peaks within 1 dB). The 50 dB
 #      attenuation cap leaves headroom above the 20 dB gate, so a sane
@@ -23,7 +21,7 @@ OUT="$ROOT/tests/drills/out"
 mkdir -p "$OUT"
 
 MODEL_DIR="${NOISE_ORDNANCE_MODEL_DIR:-$ROOT/third_party/models}"
-for f in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+for f in DeepFilterNet3_onnx.tar.gz; do
   if [[ ! -f "$MODEL_DIR/$f" ]]; then
     echo "FAIL: model file missing: $MODEL_DIR/$f"
     echo "  Run: bash third_party/download-models.sh"
@@ -55,7 +53,6 @@ fi
 # tuned run passes all earlier args explicitly (hum 0, model 0).
 "$BIN" "$SRC" "$OUT/harness-default.wav" 128 1.0 0 0 0.02 100
 "$BIN" "$SRC" "$OUT/harness-tuned.wav" 128 1.0 0 0 0.05 50
-"$BIN" "$SRC" "$OUT/harness-model1.wav" 128 1.0 0 1 0.02 100
 
 # Counts must match the input exactly.
 # NOTE (Windows): the path must reach Python as an argv item, not
@@ -64,7 +61,7 @@ fi
 # does not rewrite paths inside -c code, and MinGW Python cannot open
 # an MSYS2-style path (FileNotFoundError for a file that exists).
 IN_COUNT="$(python3 -c "import sys, wave; print(wave.open(sys.argv[1]).getnframes())" "$SRC")"
-for f in harness-default.wav harness-tuned.wav harness-model1.wav; do
+for f in harness-default.wav harness-tuned.wav; do
   OUT_COUNT="$(python3 -c "import sys, wave; print(wave.open(sys.argv[1]).getnframes())" "$OUT/$f")"
   if [[ "$OUT_COUNT" != "$IN_COUNT" ]]; then
     echo "FAIL: $f has $OUT_COUNT samples, input has $IN_COUNT"
@@ -72,7 +69,7 @@ for f in harness-default.wav harness-tuned.wav harness-model1.wav; do
   fi
 done
 
-# Tuned and model-1 runs must differ from default (args honored).
+# Tuned run must differ from default (args honored).
 # Max absolute sample difference in LSB, computed with stdlib wave.
 maxdiff() {
   python3 - "$1" "$2" <<'PYEOF'
@@ -86,15 +83,9 @@ print(max((abs(x - y) for x, y in zip(a, b)), default=0))
 PYEOF
 }
 MAXDIFF_TUNED="$(maxdiff "$OUT/harness-default.wav" "$OUT/harness-tuned.wav")"
-MAXDIFF_MODEL1="$(maxdiff "$OUT/harness-default.wav" "$OUT/harness-model1.wav")"
 echo "default vs tuned (pfbeta 0.05, atten 50): max diff $MAXDIFF_TUNED LSB"
-echo "default vs model 1 (DeepFilterNet3 Low Latency): max diff $MAXDIFF_MODEL1 LSB"
 if [[ "$MAXDIFF_TUNED" == "0" ]]; then
   echo "FAIL: tuned run identical to default -- pfbeta/atten args ignored"
-  exit 1
-fi
-if [[ "$MAXDIFF_MODEL1" == "0" ]]; then
-  echo "FAIL: model-1 run identical to default -- model arg ignored"
   exit 1
 fi
 

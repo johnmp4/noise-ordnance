@@ -37,8 +37,8 @@ TP="$ROOT/third_party"
 # DeepFilterNet2, but DF2 fails to load under BOTH versions (tract
 # reshape lowering panics), so there is no reason to carry v0.5.6's
 # older tree: main builds on current stable Rust, declares the
-# staticlib crate-type already, and gives identical DF3/DF3_ll
-# behavior (same measured latencies).
+# staticlib crate-type already, and gives identical DF3
+# behavior (same measured latency).
 DF_PIN="d375b2d8309e0935d165700c91da9de862a99c31"
 
 echo "=== Noise Ordnance: installing third-party dependencies ==="

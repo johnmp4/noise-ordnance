@@ -30,8 +30,8 @@ bash third_party/dpf/utils/generate-ttl.sh third_party/bin
 # plugin looks in <bundle>/models/ when $NOISE_ORDNANCE_MODEL_DIR is
 # unset, and an installed bundle without models runs dry.
 mkdir -p "$ROOT/third_party/bin/NoiseOrdnance.lv2/models" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models"
-cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.lv2/models/"
-cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/models/DeepFilterNet3_ll_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models/"
+cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.lv2/models/"
+cp "$ROOT/third_party/models/DeepFilterNet3_onnx.tar.gz" "$ROOT/third_party/bin/NoiseOrdnance.vst3/models/"
 
 echo "=== Noise Ordnance: install? ==="
 printf 'Install the built bundles? [Y/n]: '

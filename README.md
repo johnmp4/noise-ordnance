@@ -7,7 +7,7 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 - 📦 **Releases:** https://github.com/johnmp4/noise-ordnance/releases
 - 🐛 **Issues:** https://github.com/johnmp4/noise-ordnance/issues
 
-**Lookahead is part of the design:** the model uses lookahead to do its best work on tracks you have already recorded, and the plugin reports its latency to the host for delay compensation. Per-model numbers are in "Measured performance" below.
+**Lookahead is part of the design:** the model uses lookahead to do its best work on tracks you have already recorded, and the plugin reports its latency to the host for delay compensation. The latency number is in "Measured performance" below.
 
 ## Install
 
@@ -29,7 +29,7 @@ Load the LV2 or VST3 bundle in your host. Model files are downloaded during the 
 Dual-mono: stereo is two independent engines, one per channel. Each channel runs, in order:
 
 1. **Hum notch filter** — cascaded biquads at 50 or 60 Hz plus the first four harmonics. Old-school DSP, runs before everything else. Toggleable.
-2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. Two models, selected by the Low Latency Model switch: OFF = DeepFilterNet3 (default, post-production), ON = DeepFilterNet3 Low Latency (no lookahead, for the lowest-latency use).
+2. **DeepFilterNet denoiser** — the neural net (deep filtering: it predicts complex filter coefficients, not just per-band gains), running at its native 48 kHz with resampling on both sides. This is the hiss killer. It runs DeepFilterNet3, the post-production model with lookahead.
 3. **Post-filter** — DeepFilterNet's perceptual cleanup stage, after the model. The Postfilter Strength knob (0–0.05, default 0.02; 0 = off) sets its strength.
 4. **Aggressiveness** — a global cap on how hard the model can cut, in dB (0–100, default 100 = no limit). Lowering the cap leaves more of the original in the output. This is the knob that keeps the "metallic" edge out.
 5. **Wet/dry mix** — the Reduction knob, with smoothed transitions so automation doesn't zip.
@@ -42,12 +42,11 @@ Dual-mono: stereo is two independent engines, one per channel. Each channel runs
 | 1 | Input Trim | −12 to +12 dB | 0 dB | Hit the model at a healthy level |
 | 2 | Hum Filter | on/off | off | The notch cascade |
 | 3 | Hum Freq | 50 / 60 Hz | 60 Hz | Match your wall power |
-| 4 | Low Latency Model | off / on | off | OFF = DeepFilterNet3 (post-production); ON = DeepFilterNet3 Low Latency (no lookahead). Switching reloads the model and updates reported latency; hosts vary in whether they re-compensate mid-session — if a switch sounds misaligned, remove and re-add the instance |
-| 5 | Reduction | 0–100 % | 100 % | Wet/dry mix |
-| 6 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
-| 7 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
-| 8 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
-| 9 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact (wet signal only; bypass is untrimmed) |
+| 4 | Reduction | 0–100 % | 100 % | Wet/dry mix |
+| 5 | Aggressiveness | 0–100 dB | 100 dB | 100 = no limit; lower = less suppression |
+| 6 | Postfilter Strength | 0–0.05 | 0.02 | 0 = post-filter off |
+| 7 | Delta Monitor | on/off | off | Outputs dry-minus-wet: hear what's being removed |
+| 8 | Output Trim | −12 to +12 dB | 0 dB | Makeup after the fact (wet signal only; bypass is untrimmed) |
 
 ### Tuning with the delta monitor
 
@@ -65,7 +64,6 @@ From the repo's drill suite, real speech + noise recordings, not synth tones (De
 | Model | Latency @ 48 kHz (samples) | Latency @ 48 kHz (ms) |
 |-------|---------------------------|----------------------|
 | DeepFilterNet3 | 5616 | 117 |
-| DeepFilterNet3 Low Latency | 4656 | 97 |
 
 Measured by speech cross-correlation (`tests/check-latency.py`, confirmed by an in-process unit test that agrees to the sample). Impulse and noise-burst probes do not work for this model: it gates near-silent frames and suppresses stationary noise, so only speech gives a measurable output. Each total is the wet-start prefix (4096 samples) plus chain lag (STFT + lookahead + resamplers); the wet-start prefix also means the first ~85 ms of a stream is dry, by design. Re-measure if the model files change: a new upstream tarball can change a model's internal delay, and a stale table makes the host compensate by the wrong amount.
 
@@ -92,7 +90,7 @@ The scripts, by role: `validate-build.sh` is the release build — plain `make` 
 
 Release builds run on GitHub Actions (`.github/workflows/release-build.yml`) from a frozen environment, so a release binary is reproducible: Linux builds on Ubuntu 22.04 (glibc 2.35 floor, so the binary runs on 22.04 and newer), Windows builds with MSYS2 MinGW64, and macOS builds Intel-only with a 10.15 floor. The workflow produces zip bundles with the models included, runs on pushes to main and pull requests targeting main (plus manual dispatch), and checks for a non-executable stack, no dynamic speex dependency, and a portable bundle size. Rust is pinned to 1.99.1 on all three jobs.
 
-The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
+The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). Model files are downloaded, not committed: the model tarball lands in `third_party/models/` and is copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
 
 **Debug builds:** `bash debug.sh` (or `make DEBUG=true`) — full logging to `/tmp/no-debug.log` through `DenoiserEngine::debugLog()`, the single place the log path lives. Build debug to test, rebuild normally for release; the logging compiles out. debug.sh runs no tests; after the build it asks whether to install the built bundles (via `install.sh`).
 

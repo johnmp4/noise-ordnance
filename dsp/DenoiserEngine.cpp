@@ -36,19 +36,18 @@ void DenoiserEngine::debugLog(const char* fmt, ...) {
 namespace {
 
 // Model files (in the model directory) and display names, indexed by
-// DenoiserEngine::kModelDF3 / kModelDF3LL. The plugin's Low Latency
-// Model switch maps OFF -> index 0, ON -> index 1. DeepFilterNet2 is not
-// here: it does not load (see DenoiserEngine.hpp).
+// DenoiserEngine::kModelDF3. There is a single loadable model:
+// DeepFilterNet3. A low-latency variant was deliberately not offered
+// (see NoiseOrdnance.cpp). DeepFilterNet2 is not here: it does not
+// load (see DenoiserEngine.hpp).
 const char* kModelFiles[DenoiserEngine::kModelCount] = {
     "DeepFilterNet3_onnx.tar.gz",
-    "DeepFilterNet3_ll_onnx.tar.gz",
 };
 const char* kModelNames[DenoiserEngine::kModelCount] = {
     "DeepFilterNet3",
-    "DeepFilterNet3 Low Latency",
 };
 
-// Measured wet-path latency at 48 kHz, per model, via cross-correlation
+// Measured wet-path latency at 48 kHz, via cross-correlation
 // (tests/check-latency.py): the clean drill speech is run through the
 // engine at 100% wet and a mid-file segment of input vs output is
 // correlated; the peak lag is the number below. An impulse probe does
@@ -61,12 +60,10 @@ const char* kModelNames[DenoiserEngine::kModelCount] = {
 // and put the measured numbers here. Do NOT guess these numbers.
 //   DeepFilterNet3: 5616 = wetStart 4096 + chain lag 1520 (model STFT +
 //     lookahead + resamplers). At 48 kHz that is 117 ms total.
-//   DeepFilterNet3 Low Latency: 4656 = 4096 + 560 (97 ms total).
 // DeepFilterNet2 is not in this table: it does not load (see
 // DenoiserEngine.hpp), so it has no meaningful latency here.
 const uint32_t kModelLatency48k[DenoiserEngine::kModelCount] = {
     5616,  // DeepFilterNet3 -- measured by speech cross-correlation (tests/check-latency.py)
-    4656,  // DeepFilterNet3 Low Latency -- measured by speech cross-correlation
 };
 
 bool fileExists(const std::string& path) {
@@ -246,60 +243,12 @@ void DenoiserEngine::reset() {
     startWorker();
 }
 
-bool DenoiserEngine::setModel(int index) {
-  if (index < 0 || index >= kModelCount)
-    return false;
-  if (!initialized_) {
-    // Not init()'d yet (plugin constructed but not activated): just
-    // record the selection; activate() loads it.
-    modelIndex_ = index;
-    return true;
-  }
-  if (modelDir_.empty())
-    return false;
-  // The worker touches dfState_: stop it across the load, and restart
-  // it if it was up -- including on load failure, where the previous
-  // state is preserved. The slow load runs OUTSIDE the lock: the audio
-  // thread keeps running the old model (sync fallback) on valid,
-  // untouched state. Only the fast swap + clearPipeline run under the
-  // exclusive lock (see stateMutex_ protocol): stopping the worker
-  // alone does NOT make the swap safe, because the audio thread's
-  // sync fallback can be inside df_process_frame while the UI thread
-  // frees dfState_ -- that race crashed a probe in tract.
-  const bool wasRunning = workerRunning_.load();
-  stopWorker();
-  size_t fl = 0;
-  DFState* next = createModelState(modelDir_ + "/" + modelFileName(index), fl);
-  if (next == nullptr) {
-    if (wasRunning)
-      startWorker();
-    return false;  // keeps the current model
-  }
-  stateMutex_.lock();
-  if (dfState_ != nullptr)
-    df_free(dfState_);
-  dfState_ = next;
-  df_set_post_filter_beta(dfState_, postFilterBeta_);
-  df_set_atten_lim(dfState_, attenLimDb_);
-  frameLen_ = static_cast<uint32_t>(fl);
-  frameBuf_.assign(frameLen_, 0.0f);
-  frameOutBuf_.assign(frameLen_, 0.0f);
-  modelIndex_ = index;
-  latency48k_ = kModelLatency48k[index];
-  dryDelayLen_ = static_cast<uint32_t>(std::round(latency48k_ * hostRate_ / 48000.0));
-  clearPipeline();
-  stateMutex_.unlock();
-  if (wasRunning)
-    startWorker();
-  return true;
-}
-
 // One DF frame: pop a frame from the input ring, run it, push exactly
 // one frame's worth of output to the output ring.
 //   Inference runs unconditionally here, even when bypassed: skipping
 // it would leave a gap in DF's internal temporal state, and on
 // un-bypass the wet stream would resume ~70 ms early and stay shifted
-// until the next pipeline reset (a model switch) -- a persistent
+// until the next pipeline reset -- a persistent
 // phasey echo, covered by tests/unit/test-bypass-alignment.cpp.
 // During bypass the render loop discards the wet (mix_ == 0 outputs
 // delayed dry), which costs active CPU while bypassed but keeps DF's
@@ -425,9 +374,9 @@ void DenoiserEngine::rebuildHumFilters() {
 void DenoiserEngine::process(const float* in, float* out, uint32_t frames) {
   if (in == nullptr || out == nullptr || frames == 0)
     return;
-  // try_lock_shared: never block the audio thread. If a model switch
+  // try_lock_shared: never block the audio thread. If a reset
   // holds the exclusive lock, this block passes audio through
-  // untouched; the post-switch pipeline reset realigns everything, so
+  // untouched; the pipeline reset realigns everything, so
   // the skipped block leaves no offset behind. The large-block split
   // runs under the single shared hold (processInternal per chunk, not
   // process -- shared_mutex is not recursive).
@@ -712,7 +661,7 @@ uint32_t DenoiserEngine::latencySamples() const {
 void DenoiserEngine::startWorker() {
   // Idempotent test-and-set: a second start while running is a no-op.
   // The worker idles (5 ms timeout loop) when no model is loaded; a
-  // later setModel restarts it, so a late model load still engages it.
+  // later model load still engages it.
   if (workerRunning_.exchange(true))
     return;
   worker_ = std::thread([this] { workerMain(); });
@@ -765,9 +714,9 @@ void DenoiserEngine::workerMain() {
         break;
     }  // release workerMutex_ BEFORE inference -- never hold it across
        // df_process_frame, and never hold it together with
-       // stateMutex_ (setModel's stop path must not deadlock).
-    // Shared lock across the param application AND the frame: a model
-    // switch's exclusive lock waits for the frame to finish, so
+       // stateMutex_ (reset's stop path must not deadlock).
+    // Shared lock across the param application AND the frame: a reset's
+    // exclusive lock waits for the frame to finish, so
     // dfState_ is never freed under a running df_process_frame. The
     // wait predicate above is only a wakeup hint; the checks here,
     // under shared, are authoritative.

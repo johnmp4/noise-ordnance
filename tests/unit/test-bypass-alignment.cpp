@@ -6,7 +6,7 @@
 // gap in DF's internal temporal state, and on un-bypass the wet
 // stream resumes ~70 ms early and stays shifted until the next
 // pipeline reset -- a persistent phasey echo, cleared only by a
-// model switch. Short bypasses never trigger it because the mix
+// pipeline reset. Short bypasses never trigger it because the mix
 // needs ~112 ms to settle to exactly 0 (exponential ramp
 // stall-snap), so the skip would never engage on a quick click.
 //   This test reproduces the live shape: one engine, worker on,
@@ -19,8 +19,7 @@
 // because the engine discards wet at mix_ == 0 instead of starving
 // the model.
 //   Pacing note: the audio thread drains the worker after EVERY
-// block (waitWorkerIdle), exactly like test-async and
-// test-model-switch-race. This keeps the test in the live regime:
+// block (waitWorkerIdle), exactly like test-async. This keeps the test in the live regime:
 // a live host delivers blocks at 1x and the worker runs ahead of
 // real time, so the ring stays near empty and the wet stream never
 // starves. Starvation matters because the render loop is FIFO with
@@ -43,8 +42,8 @@ using namespace unit_test;
 
 namespace {
 
-// Same local WAV reader as the other drill-based tests (test-async,
-// test-model-switch-race): mono 16-bit, data chunk located by tag.
+// Same local WAV reader as the other drill-based tests (test-async):
+// mono 16-bit, data chunk located by tag.
 bool readWavMono16(const char* path, std::vector<float>& out) {
   FILE* f = std::fopen(path, "rb");
   if (!f)

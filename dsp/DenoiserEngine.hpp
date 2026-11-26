@@ -42,13 +42,10 @@ class RingBuffer;
 class DenoiserEngine {
 public:
   // Model selection: index into the model file table (see .cpp).
-  // The plugin exposes this as a boolean Low Latency Model switch
-  // (OFF = kModelDF3, ON = kModelDF3LL); the harness and unit tests
-  // address models by index directly.
-  // It was an enum originally; with only two loadable models the enum
-  // showed up as an unlabeled binary switch in at least one host, so
-  // it is a toggle. If a third loadable model ever appears, this must
-  // become an enum again.
+  // There is a single loadable model: DeepFilterNet3 (kModelDF3).
+  // A low-latency variant was deliberately not offered (see
+  // NoiseOrdnance.cpp). The harness and unit tests address the model
+  // by index directly.
   // NOTE: DeepFilterNet2 is deliberately NOT offered. Both DF2 models
   // (full and _ll) panic inside tract's reshape lowering at load time
   // (df_create aborts the host process) under libDF 0.5.6/tract 0.19.16
@@ -56,8 +53,7 @@ public:
   // binary as well as this engine. A model that aborts the host cannot
   // be a dropdown entry.
   static constexpr int kModelDF3 = 0;
-  static constexpr int kModelDF3LL = 1;
-  static constexpr int kModelCount = 2;
+  static constexpr int kModelCount = 1;
   static const char* modelFileName(int index);
   static const char* modelDisplayName(int index);
 
@@ -84,12 +80,6 @@ public:
   void setOutputTrim(float db);
   void setBypassed(bool b);
   void setHum(bool enabled, float mainsFreq);
-  // Synchronous model reload (test branch: load time is not a concern).
-  // If the engine was never init()'d, just records the index for the
-  // next init(). If the file is missing, keeps the current model and
-  // returns false. On success, latencySamples() reflects the new model
-  // and the pipeline is cleared (brief dry moment at the switch).
-  bool setModel(int index);
   int modelIndex() const { return modelIndex_; }
 
   // Silence gate (CPU saver, Oct 31, 2026): a DF frame whose RMS sits
@@ -126,7 +116,7 @@ public:
   // render loop falls back to delayed dry (a brief un-denoised
   // moment), never a dropout or a crash. start/stop are NOT
   // thread-safe against each other; in practice the host serializes
-  // activate/deactivate/setModel/reset/destruction.
+  // activate/deactivate/reset/destruction.
   //
   // Offline-render fix (Nov 2, 2026): a freewheeling host (Ardour
   // session export) calls process() as fast as the machine allows,
@@ -186,8 +176,8 @@ private:
   static void debugLog(const char* fmt, ...);
   bool loadModelFile(const std::string& path);
   // Create + validate a DF state WITHOUT touching member state (the
-  // slow df_create lives here). setModel/reset load through this, then
-  // swap under the exclusive lock; loadModelFile uses it too.
+  // slow df_create lives here). reset loads through this, then swaps
+  // under the exclusive lock; loadModelFile uses it too.
   DFState* createModelState(const std::string& path, size_t& outFrameLen);
   // Caller must hold stateMutex_ exclusive, except init(), which runs
   // single-threaded before activation and never races process().
@@ -280,23 +270,23 @@ private:
   // async mode -- never both, since mode switches stop the worker).
   uint32_t silentFrames_ = 0;
   uint64_t gatedFrames_ = 0;
-  // Thread-safety protocol (model-switch race fix, Nov 1, 2026).
-  // setModel/reset swap dfState_ and reset the rings, resamplers, dry
+  // Thread-safety protocol (model-swap race fix, Nov 1, 2026).
+  // reset() swaps dfState_ and clears the rings, resamplers, dry
   // delay line, and stream position -- all state the audio thread
   // (process, including its sync fallback) and the worker thread
   // (processDfFrame) touch. Stopping the worker is NOT enough: while
   // it is down, the audio thread falls back to synchronous DF, so it
-  // can be inside df_process_frame while the UI thread frees
+  // can be inside df_process_frame while another thread frees
   // dfState_ -- proven by a multithreaded probe that crashed in
   // tract on freed graph memory (index out of bounds on a garbage
   // index). Protocol: process() takes try_lock_shared -- it NEVER
-  // blocks the audio thread; if a switch holds exclusive, that block
-  // passes audio through untouched (the post-switch reset realigns
-  // everything, so the skipped block leaves no offset behind).
+  // blocks the audio thread; if a reset holds exclusive, that block
+  // passes audio through untouched (the post-reset realignment
+  // leaves no offset behind).
   // workerMain() takes lock_shared across each frame (param
-  // application + processDfFrame). setModel()/reset() do the slow
+  // application + processDfFrame). reset() does the slow
   // model load OUTSIDE the lock (the audio thread keeps running the
-  // old model on valid, untouched state), then take lock()
+  // current state, untouched), then takes lock()
   // (exclusive) only for the fast swap + clearPipeline. The plain
   // float params (reduction, trims, bypass, hum switches) stay
   // lock-free: a stale read costs at most one block, inaudible.

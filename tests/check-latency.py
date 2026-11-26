@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 John Peterman
 # SPDX-License-Identifier: MIT
-# check-latency.py: verify the engine's reported per-model latency
+# check-latency.py: verify the engine's reported latency
 # against the TRUE wet-path delay, measured by cross-correlation.
 #
 # Why correlation, not an impulse: DeepFilterNet gates near-silent
@@ -15,16 +15,16 @@
 # ~85 ms is dry (the wet-start prefix) and the first ~10 ms is the mix
 # ramp, so both are excluded.
 #
-# The script reads the expected values from kModelLatency48k in
+# The script reads the expected value from kModelLatency48k in
 # dsp/DenoiserEngine.cpp (the table the engine reports via
-# latencySamples()) and FAILS if any model's measured delay differs by
+# latencySamples()) and FAILS if the measured delay differs by
 # more than 48 samples (1 ms at 48 kHz). Re-measure with this script
-# whenever the model files change; the table must match the files on
+# whenever the model file changes; the table must match the file on
 # disk or host delay compensation is wrong by the difference.
 #
-# Usage: python3 tests/check-latency.py [--models 0,1,2]
+# Usage: python3 tests/check-latency.py [--models 0]
 # Requires: tests/build/denoise_wav built (tests/run_drills.sh builds it),
-# the clean drill file, and the model tarballs
+# the clean drill file, and the model tarball
 # ($NOISE_ORDNANCE_MODEL_DIR or third_party/models).
 import argparse
 import os
@@ -36,7 +36,7 @@ import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODELS = ["DeepFilterNet3", "DeepFilterNet3 Low Latency"]
+MODELS = ["DeepFilterNet3"]
 # Mid-file speech segment (samples): avoids the wet-start prefix and mix ramp.
 SEG_START = 5 * 48000
 SEG_LEN = 10 * 48000
@@ -101,7 +101,7 @@ def correlate_delay(ref, out):
 
 def main(argv):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", default="0,1")
+    ap.add_argument("--models", default="0")
     args = ap.parse_args(argv)
     wanted = [int(x) for x in args.models.split(",") if x != ""]
 
@@ -120,7 +120,7 @@ def main(argv):
         return 1
     model_dir = os.environ.get("NOISE_ORDNANCE_MODEL_DIR",
                                str(ROOT / "third_party/models"))
-    for f in ("DeepFilterNet3_onnx.tar.gz", "DeepFilterNet3_ll_onnx.tar.gz"):
+    for f in ("DeepFilterNet3_onnx.tar.gz",):
         if not os.path.isfile(os.path.join(model_dir, f)):
             print("FAIL: model file missing: %s/%s" % (model_dir, f))
             return 1

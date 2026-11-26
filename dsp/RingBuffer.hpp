@@ -20,7 +20,7 @@
 // overwrites an unread one (a push that would overflow returns false
 // instead of overwriting -- the caller decides what dropping means).
 // reset() is NOT thread-safe: call it only with no worker running
-// (init / setModel / reset all stop the worker first).
+// (init / reset all stop the worker first).
 class RingBuffer {
 public:
   explicit RingBuffer(size_t capacity)

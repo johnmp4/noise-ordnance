@@ -5,8 +5,8 @@
 #
 # Model files are NOT committed to git (they are large binaries, and
 # the project's pattern is that third_party content is fetched by
-# install scripts). This script downloads the two model tarballs the
-# plugin's Model dropdown offers, into third_party/models/.
+# install scripts). This script downloads the one model tarball the
+# plugin uses, into third_party/models/.
 #
 # The plugin loads the .tar.gz paths directly at runtime (the same
 # pattern as the deep-filter binary's -m flag): no extraction, no
@@ -16,9 +16,8 @@
 #
 # Sizes below are the recorded sizes for these files. A mismatch fails
 # the download with a warning -- it usually means the upstream file
-# changed, in which case the per-model latencies in
-# dsp/DenoiserEngine.cpp must be re-measured (see
-# tests/latency-by-model.sh) before trusting the build.
+# changed, in which case the latency in dsp/DenoiserEngine.cpp must be
+# re-measured (see tests/check-latency.py) before trusting the build.
 #
 # Usage: bash third_party/download-models.sh
 # Run from the project root (or anywhere: it resolves its own dir).
@@ -37,7 +36,6 @@ mkdir -p "$OUT"
 # before fetching the real models; do not re-add it.)
 MODELS=(
   "DeepFilterNet3_onnx.tar.gz 7983136"
-  "DeepFilterNet3_ll_onnx.tar.gz 36359660"
 )
 BASE="https://github.com/Rikorose/DeepFilterNet/raw/main/models"
 
@@ -68,8 +66,8 @@ for entry in "${MODELS[@]}"; do
   actual="$(file_size "$dest")"
   if [[ "$actual" != "$expected" ]]; then
     echo "WARNING: $name downloaded size $actual != expected $expected."
-    echo "  Upstream may have changed the file. Re-measure per-model"
-    echo "  latencies (tests/latency-by-model.sh) before trusting this build."
+    echo "  Upstream may have changed the file. Re-measure the latency"
+    echo "  (tests/check-latency.py) before trusting this build."
   else
     echo "    OK: $name ($actual bytes)"
   fi

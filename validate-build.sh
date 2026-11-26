@@ -16,8 +16,8 @@
 #      (Linux only; LV2 is not shipped on Windows).
 #   6. tests/vst3-smoke-test.sh -- VST3 bundle structure (binary +
 #      models) on every platform; VST3 is the shipped format on both.
-#   7. tests/param-contract.py -- 10 parameters vs the README table, from
-#      the freshly generated TTL, plus the Low Latency switch toggle pin.
+#   7. tests/param-contract.py -- 9 parameters vs the README table, from
+#      the freshly generated TTL.
 #   8. tests/test-harness-settings.sh -- denoise_wav model/pfbeta/atten args.
 #   9. tests/check-pumping.sh -- window-RMS variance on processed quiet
 #      (report-only by design; see that script for why it has no gate).
@@ -38,7 +38,7 @@ if [[ ! -f "$ROOT/third_party/deepfilternet/target/release/libdf.a" ]]; then
   echo "FAIL validate-build: libDF static library missing -- run third_party/build-libdf.sh (or install-third-party.sh) first"
   exit 1
 fi
-for model in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+for model in DeepFilterNet3_onnx.tar.gz; do
   if [[ ! -f "$ROOT/third_party/models/$model" ]]; then
     echo "FAIL validate-build: model file missing: third_party/models/$model -- run third_party/download-models.sh first"
     exit 1
@@ -58,8 +58,8 @@ bash third_party/dpf/utils/generate-ttl.sh third_party/bin
 # <bundle>/models/ layout as a best-effort convention.
 echo "=== validate-build: copying models into build bundles ==="
 mkdir -p third_party/bin/NoiseOrdnance.lv2/models third_party/bin/NoiseOrdnance.vst3/models
-cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
-cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
+cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
 
 echo "=== validate-build: audio drills ==="
 bash tests/run_drills.sh

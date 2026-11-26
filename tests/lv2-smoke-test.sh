@@ -51,10 +51,10 @@ grep -q "doap:name \"Noise Ordnance\"" "$TTL" || fail "$TTL_NAME does not name t
 
 echo "--- lv2-smoke: bundle structure OK ($BUNDLE)"
 
-for model in DeepFilterNet3_onnx.tar.gz DeepFilterNet3_ll_onnx.tar.gz; do
+for model in DeepFilterNet3_onnx.tar.gz; do
   [[ -f "$BUNDLE/models/$model" ]] || fail "bundle is missing models/$model (a bundle without models runs dry)"
 done
-echo "--- lv2-smoke: both model tarballs present in models/"
+echo "--- lv2-smoke: model tarball present in models/"
 
 if command -v lv2ls >/dev/null 2>&1; then
   if lv2ls 2>/dev/null | grep -qF "$URI"; then

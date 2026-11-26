@@ -10,7 +10,8 @@
 //   blocksize   default 128 (typical DAW block)
 //   reduction01 default 1.0 (100%)
 //   hum         default 0 (off); 50 or 60 enables the hum notch module
-//   model       default 0 (DeepFilterNet3); 1 = DeepFilterNet3 Low Latency
+//   model       default 0 (DeepFilterNet3, the only model); kept as a
+//               positional argument so pfbeta/atten keep their slots
 //   pfbeta      default 0.02 (engine default); 0 = post-filter off, 0..0.05
 //   atten       default 100 (engine default, no limit); 0..100 dB
 // Settings args are positional: to set atten you must set the earlier
