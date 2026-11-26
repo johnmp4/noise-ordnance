@@ -96,7 +96,7 @@ jobs:
       - name: Fetch third-party code, build libDF, download models
         run: bash third_party/install-third-party.sh
         # Clones DPF + DeepFilterNet (pinned), builds libdf.a, downloads
-        # the DeepFilterNet3 and DeepFilterNet3_ll model tarballs.
+        # the DeepFilterNet3 model tarball.
 
       - name: Build LV2 and VST3
         run: make -j"$(nproc)"
@@ -119,8 +119,8 @@ jobs:
       - name: Bundle the models into the bundles
         run: |
           mkdir -p third_party/bin/NoiseOrdnance.vst3/models third_party/bin/NoiseOrdnance.lv2/models
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/bin/NoiseOrdnance.lv2/models/
 
       - name: Verify no dynamic speex dependency (copy-to-folder check)
         run: |
@@ -225,7 +225,7 @@ jobs:
       - name: Bundle the models into the .vst3
         run: |
           mkdir -p third_party/bin/NoiseOrdnance.vst3/models
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
 
       - name: Verify only Windows system DLLs (copy-to-folder check)
         run: |
@@ -285,7 +285,7 @@ jobs:
       - name: Fetch third-party code, build libDF, download models
         run: bash third_party/install-third-party.sh
         # Clones DPF + DeepFilterNet (pinned), builds libdf.a, downloads
-        # the DeepFilterNet3 and DeepFilterNet3_ll model tarballs.
+        # the DeepFilterNet3 model tarball.
 
       - name: Build VST3
         run: make vst3
@@ -296,7 +296,7 @@ jobs:
       - name: Bundle the models into the .vst3
         run: |
           mkdir -p third_party/bin/NoiseOrdnance.vst3/models
-          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/models/DeepFilterNet3_ll_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
+          cp third_party/models/DeepFilterNet3_onnx.tar.gz third_party/bin/NoiseOrdnance.vst3/models/
 
       - name: Verify only system dylibs + 10.15 floor (copy-to-folder check)
         run: |
@@ -324,7 +324,6 @@ jobs:
           VST3=dist/macos-vst3/NoiseOrdnance.vst3
           test -d "$VST3"
           test -f "$VST3/models/DeepFilterNet3_onnx.tar.gz"
-          test -f "$VST3/models/DeepFilterNet3_ll_onnx.tar.gz"
 
       - name: Upload macOS VST3 bundle
         uses: actions/upload-artifact@v4
