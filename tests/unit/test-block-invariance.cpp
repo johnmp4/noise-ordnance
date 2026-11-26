@@ -18,8 +18,8 @@
 // 44.1 kHz (fractional resample ratio), and 96 kHz (2x upsample), plus
 // one non-default tuning (post-filter beta + attenuation limit).
 // A failure here is a real finding about the DF engine's assembly, not
-// a test to delete: the Oct 2026 RNNoise engine failed this test for
-// exactly these assembly reasons before it was fixed.
+// a test to delete: it means the output assembly is wrong, not the
+// model core.
 #include <cstdio>
 #include <string>
 #include <vector>

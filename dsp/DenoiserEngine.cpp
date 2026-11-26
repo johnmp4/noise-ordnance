@@ -14,6 +14,12 @@
 #include <cstdio>
 #include <sys/stat.h>
 
+// M_PI is not standard C++: strict -std=c++17 hides it on MinGW-w64,
+// while glibc still exposes it. Define it when missing.
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 void DenoiserEngine::debugLog(const char* fmt, ...) {
   (void)fmt;
 #ifdef DEBUG
@@ -290,19 +296,14 @@ bool DenoiserEngine::setModel(int index) {
 
 // One DF frame: pop a frame from the input ring, run it, push exactly
 // one frame's worth of output to the output ring.
-//   NOTE (Nov 1, 2026): this used to skip inference entirely when
-// bypass had settled (bypassed_ && mix_ == 0 && !deltaMonitor_),
-// on the theory that wet multiplied by zero is pure waste and the
-// stream would restart cleanly because the model's delay is
-// lookahead + STFT, not wall-clock time. That theory was WRONG:
-// the gap corrupts DF's internal temporal state, and on un-bypass
-// the wet stream resumes ~70 ms early and stays shifted until the
-// next pipeline reset (a model switch) -- the live bypass echo,
-// reproduced in a stereo probe (see tests/unit/test-bypass-alignment.cpp).
-// So inference now runs unconditionally here; during bypass the
-// render loop discards the wet (mix_ == 0 outputs delayed dry),
-// which costs active CPU while bypassed but keeps DF's state
-// continuous. The silence gate below is different: gated frames
+//   Inference runs unconditionally here, even when bypassed: skipping
+// it would leave a gap in DF's internal temporal state, and on
+// un-bypass the wet stream would resume ~70 ms early and stay shifted
+// until the next pipeline reset (a model switch) -- a persistent
+// phasey echo, covered by tests/unit/test-bypass-alignment.cpp.
+// During bypass the render loop discards the wet (mix_ == 0 outputs
+// delayed dry), which costs active CPU while bypassed but keeps DF's
+// state continuous. The silence gate below is different: gated frames
 // push zeros (not nothing) so the wet stream's frame count -- and
 // hence wet/dry alignment -- never shifts.
 //   Silence gate: see the constants in the header.
@@ -493,7 +494,7 @@ void DenoiserEngine::stageWet() {
   }
 }
 
-// Discard stale wet (offline-render fix, Nov 2, 2026): pendingHost_[0]
+// Discard stale wet: pendingHost_[0]
 // belongs to position wetPos_; if the render has advanced past it
 // (starvation gaps fell back to dry), those samples are for positions
 // already rendered and must never sound. Drop the stale prefix so the
@@ -598,7 +599,7 @@ void DenoiserEngine::processInternal(const float* in, float* out, uint32_t frame
   stageWet();
   dropStaleWet();
 
-  // Bounded wait for worker wet (offline-render fix, Nov 2, 2026):
+  // Bounded wait for worker wet:
   // if this block renders post-wetStart_ positions but the staged wet
   // falls short, wait for the worker to produce more (it notifies
   // wetCv_ after every frame) instead of declaring starvation at

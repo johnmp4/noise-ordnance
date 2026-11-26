@@ -34,6 +34,14 @@ SPEEXDSP_CFLAGS="$(pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/incl
 SPEEXDSP_LIBS="$(pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")"
 CXX="${CXX:-g++}"
 
+# On Windows (MSYS2/MinGW), linking the Rust staticlib needs the system
+# libs Rust's std uses (Winsock, NT native API, BCrypt, userenv) -- the
+# same set as the Makefile's Windows block. They must come after libdf.a.
+case "$(uname -s)" in
+  MINGW*|MSYS*) WIN_LIBS="-lws2_32 -lntdll -lbcrypt -luserenv" ;;
+  *) WIN_LIBS="" ;;
+esac
+
 for test_src in "$ROOT"/tests/unit/test-*.cpp; do
   name="$(basename "$test_src" .cpp)"
   bin="$BUILD/unit-${name}"
@@ -43,7 +51,7 @@ for test_src in "$ROOT"/tests/unit/test-*.cpp; do
     -I"$ROOT" -I"$ROOT/dsp" -I"$ROOT/tests/unit" \
     $SPEEXDSP_CFLAGS \
     "$test_src" "$ROOT/dsp/DenoiserEngine.cpp" \
-    -o "$bin" -lm $SPEEXDSP_LIBS -lpthread -ldl "$DF_LIB"
+    -o "$bin" -lm $SPEEXDSP_LIBS -lpthread -ldl "$DF_LIB" $WIN_LIBS
 done
 
 echo "unit tests built in $BUILD"

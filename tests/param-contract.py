@@ -9,11 +9,10 @@
 #   --source PATH  parse NoiseOrdnance.cpp initParameter (the source the
 #                  TTL is generated from; works without a build)
 # With neither flag, the TTL bundle is tried first, then the source.
-# Why this test exists: the Oct 2026 LV2 generic UI showed 3 unlabeled
-# ghost parameters because the param count disagreed across files. A set
-# comparison (exactly these 10 symbols, no extras, no missing) catches
-# that whole bug class, and the value comparison catches drifted ranges
-# or defaults.
+# Why this test exists: the LV2 generic UI shows a parameter unlabeled
+# when the param count disagrees across files, so a set comparison
+# (exactly these 10 symbols, no extras, no missing) catches that whole
+# bug class, and the value comparison catches drifted ranges or defaults.
 #
 # Low Latency switch pin (TTL mode only): the "low_latency" port must be
 # a DPF boolean (lv2:toggled), not an enumeration -- that is what makes

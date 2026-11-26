@@ -1,7 +1,7 @@
 // Copyright (c) 2026 John Peterman
 // SPDX-License-Identifier: MIT
 
-// Engine unit test: the silence gate (Oct 31, 2026) must save inference
+// Engine unit test: the silence gate must save inference
 // without truncating speech. Signal: 2 s of real speech, 2 s of digital
 // silence, the same 2 s of speech again, at 48 kHz, block 512.
 //   1. The speech tail is preserved: output for the last 80 ms of the

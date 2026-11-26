@@ -35,7 +35,17 @@ $(DF_STATICLIB):
 
 SPEEXDSP_CFLAGS := $(shell pkg-config --cflags speexdsp 2>/dev/null || echo "-I/usr/include")
 SPEEXDSP_LIBS := $(shell pkg-config --libs speexdsp 2>/dev/null || echo "-lspeexdsp")
-ifneq ($(WINDOWS),true)
+ifeq ($(MACOS),true)
+# macOS: speexdsp is built from source in CI (see the workflow) and
+# installed as a static archive; pass the archive path directly.
+# macOS ld has no -Bstatic, and a Homebrew .dylib would break the
+# copy-to-folder goal. SPEEXDSP_PREFIX defaults to $HOME/speexdsp
+# (the CI install prefix) and can be overridden on the make command
+# line for a local build.
+SPEEXDSP_PREFIX ?= $(HOME)/speexdsp
+SPEEXDSP_CFLAGS := -I$(SPEEXDSP_PREFIX)/include
+SPEEXDSP_LIBS := $(SPEEXDSP_PREFIX)/lib/libspeexdsp.a
+else ifneq ($(WINDOWS),true)
 # Linux only: link speexdsp statically so the release bundle is
 # copy-to-folder with no libspeexdsp1 package needed on the user's
 # system. -Bstatic forces the archive choice (the linker otherwise
@@ -59,8 +69,27 @@ BUILD_CXX_FLAGS += -I. $(SPEEXDSP_CFLAGS)
 # after DPF's, so it wins. (The unit tests already build at C++17,
 # which is why they passed while the plugin build failed.)
 BUILD_CXX_FLAGS += -std=gnu++17
+# Linux only: force a non-executable stack on the plugin binaries.
+# One of the linked objects has no .note.GNU-stack section (the Rust
+# libDF static library is the likeliest source), so the linker marks
+# the stack executable (PT_GNU_STACK RWE) and hosts then refuse to
+# load the binaries: "cannot enable executable stack as shared object
+# requires: Invalid argument". -z noexecstack overrides that at link
+# time (the same thing execstack -c does after the fact). The macOS
+# and Windows linkers do not understand -z, so this stays Linux-only.
+# The CI Linux job verifies the result with readelf.
+ifneq ($(MACOS),true)
+ifneq ($(WINDOWS),true)
+LDFLAGS += -Wl,-z,noexecstack
+endif
+endif
 # A Rust staticlib needs the pthread/dl libs for std on Linux.
+# macOS provides both in libSystem, so they are left out there.
+ifeq ($(MACOS),true)
+EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) $(DF_STATICLIB)
+else
 EXTRA_DSP_LIBS += -lm $(SPEEXDSP_LIBS) -lpthread -ldl $(DF_STATICLIB)
+endif
 # A Rust staticlib needs these system libs for std on Windows: Winsock
 # (networking), NT native API, BCrypt (randomness) and userenv (user
 # profile directory). They must come after libdf.a in link order, which
