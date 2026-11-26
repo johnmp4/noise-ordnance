@@ -11,7 +11,7 @@ A neural-network noise reduction plugin for Linux (LV2, with VST3 from the same 
 
 ## Install
 
-Today, install is a source build. Packaged releases for Linux and Windows are on the way.
+Today, install is a source build. Release builds are produced by CI (GitHub Actions) for Linux, Windows, and macOS; packaged releases are on the way.
 
 Prerequisites: a C++17 toolchain, `make`, `pkg-config`, `git`, `python3`, and SpeexDSP (`libspeexdsp-dev` on Debian/Ubuntu). The install script sets up a project-local Rust toolchain for you if `cargo` isn't already available.
 
@@ -89,6 +89,8 @@ bash install.sh                           # installs the built bundles
 ```
 
 The scripts, by role: `validate-build.sh` is the release build — plain `make` (LV2 + VST3), LV2 TTL generation, model copy into the bundles, then the full test set in order (drills, unit tests, latency, LV2 smoke, parameter contract, harness settings, pumping check). `install.sh` copies already-built bundles to the OS destinations (Linux `~/.lv2` + `~/.vst3`; Windows `C:\Program Files\Common Files\VST3`, VST3 only, asking for admin approval when the shell isn't elevated). `debug.sh` is the quick debug build with an install prompt after. `build-test-install.sh` is just validate-build followed by install, in one command.
+
+Release builds run on GitHub Actions (`.github/workflows/release-build.yml`) from a frozen environment, so a release binary is reproducible: Linux builds on Ubuntu 22.04 (glibc 2.35 floor, so the binary runs on 22.04 and newer), Windows builds with MSYS2 MinGW64, and macOS builds Intel-only with a 10.15 floor. The workflow produces zip bundles with the models included, runs on pushes to main and pull requests targeting main (plus manual dispatch), and checks for a non-executable stack, no dynamic speex dependency, and a portable bundle size. Rust is pinned to 1.99.1 on all three jobs.
 
 The install script pins DeepFilterNet to main commit `d375b2d` and resets before building, so the model side of the build is deterministic (DPF currently tracks master). Model files are downloaded, not committed: the three tarballs land in `third_party/models/` and are copied into each bundle's `models/` directory by the build scripts. The plugin finds them at runtime in this order: `$NOISE_ORDNANCE_MODEL_DIR` if set, else `<bundle>/models/`. A bundle without models runs dry passthrough — it never crashes on a missing file, but it also never denoises, which is why the smoke test checks for the tarballs. A missing model file is safe (dry passthrough), but a corrupt one is not: libDF aborts on an unreadable model, so the download script compares each download's size against the expected value and warns on mismatch — don't ignore that warning.
 
