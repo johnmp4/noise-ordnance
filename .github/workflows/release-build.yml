@@ -4,13 +4,11 @@
 # machine, so the build is reproducible and the glibc floor is pinned.
 # GitHub Actions is free for a public repo and provides both runners.
 #
-# Status: TESTING on the `release-tooling` branch. The push trigger
-# below is TEMPORARY — it exists so the run fires on every push to this
-# branch while the workflow itself is being tested. REMOVE the
-# release-tooling push trigger before merging, and add the main
-# push/pull_request triggers at merge time (the workflow only belongs
-# on main once it is green and the branch is merged). workflow_dispatch
-# stays, for manual re-runs.
+# Status: ready for main. The workflow runs on pushes to `main`,
+# on pull requests targeting `main`, and on manual dispatch
+# (workflow_dispatch) for re-runs on any branch that has this file.
+# The temporary release-tooling push trigger was removed once the
+# workflow went green on this branch.
 #
 # What each runner pins, and why:
 #   - Linux: ubuntu-22.04 (glibc 2.35). A 22.04 binary runs on 22.04 AND
@@ -69,7 +67,9 @@ name: Release build
 
 "on":
   push:
-    branches: [release-tooling]
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
