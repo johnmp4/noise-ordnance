@@ -58,9 +58,14 @@ fi
 "$BIN" "$SRC" "$OUT/harness-model1.wav" 128 1.0 0 1 0.02 100
 
 # Counts must match the input exactly.
-IN_COUNT="$(python3 -c "import wave; print(wave.open('$SRC').getnframes())")"
+# NOTE (Windows): the path must reach Python as an argv item, not
+# embedded in the -c code string -- MSYS2 converts argv paths
+# (/c/dev/...) to Windows paths (C:/dev/...) for MinGW Python, but it
+# does not rewrite paths inside -c code, and MinGW Python cannot open
+# an MSYS2-style path (FileNotFoundError for a file that exists).
+IN_COUNT="$(python3 -c "import sys, wave; print(wave.open(sys.argv[1]).getnframes())" "$SRC")"
 for f in harness-default.wav harness-tuned.wav harness-model1.wav; do
-  OUT_COUNT="$(python3 -c "import wave; print(wave.open('$OUT/$f').getnframes())")"
+  OUT_COUNT="$(python3 -c "import sys, wave; print(wave.open(sys.argv[1]).getnframes())" "$OUT/$f")"
   if [[ "$OUT_COUNT" != "$IN_COUNT" ]]; then
     echo "FAIL: $f has $OUT_COUNT samples, input has $IN_COUNT"
     exit 1

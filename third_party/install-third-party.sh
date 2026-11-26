@@ -27,11 +27,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TP="$ROOT/third_party"
 
-# Pinned DeepFilterNet commit -- main at d375b2d (Oct 2024, the current
-# main tip). The C API (libDF/src/capi.rs) that dsp/df.h was
-# written against, and the models/ tree the download script fetches
-# from. Pinning keeps the build deterministic; bump it deliberately
-# (and re-check capi.rs + re-measure latencies) if you move it.
+# Pinned DeepFilterNet commit -- main at d375b2d. The C API
+# (libDF/src/capi.rs) that dsp/df.h was written against, and the
+# models/ tree the download script fetches from. Pinning keeps the
+# build deterministic; bump it deliberately (and re-check capi.rs +
+# re-measure latencies) if you move it.
 #
 # Pin history: v0.5.6 (tract 0.19.16) was tried hoping it would load
 # DeepFilterNet2, but DF2 fails to load under BOTH versions (tract

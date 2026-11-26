@@ -1,19 +1,18 @@
 // Copyright (c) 2026 John Peterman
 // SPDX-License-Identifier: MIT
 
-// Engine unit test: offline-render (freewheeling) behavior (Nov 2,
-// 2026). An Ardour session export calls process() as fast as the
-// machine allows, not in realtime, so the worker cannot run ahead
-// the way it does live. Before the fix, the render loop then fell
-// back to dry for the gap and resumed with STALE wet, so the export
-// smeared late wet across later speech (warbly/swishy artifact) --
-// while live playback of the same session stayed clean. This test
-// drives the async engine back-to-back (no per-block worker drain,
-// like a freewheeling export) at 128-sample blocks and requires
-// bit-identical output to the synchronous path: the bounded wait
-// absorbs worker lag and the wet anchor discards stale wet, so the
-// export path must not change a single sample. workerFrames() > 0
-// proves the worker actually ran (not a silent fallback to sync).
+// Engine unit test: offline-render (freewheeling) behavior. An Ardour
+// session export calls process() as fast as the machine allows, not in
+// realtime, so the worker cannot run ahead the way it does live. The
+// render loop must still not smear late wet across later speech: it
+// falls back to dry for a gap and resumes only with wet anchored to
+// the current stream position, never stale wet. This test drives the
+// async engine back-to-back (no per-block worker drain, like a
+// freewheeling export) at 128-sample blocks and requires bit-identical
+// output to the synchronous path: the bounded wait absorbs worker lag
+// and the wet anchor discards stale wet, so the export path must not
+// change a single sample. workerFrames() > 0 proves the worker actually
+// ran (not a silent fallback to sync).
 // NOTE on determinism: the wait bound is 50 ms per block, ~20
 // inference frames at typical speed. A stall longer than that (a
 // pathologically loaded machine) would dry-fill and fail this test

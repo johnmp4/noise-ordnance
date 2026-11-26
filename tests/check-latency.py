@@ -110,6 +110,11 @@ def main(argv):
         print("SKIP: clean drill file missing (%s)" % clean)
         return 0
     denoise = ROOT / "tests/build/denoise_wav"
+    if not denoise.is_file() and (denoise.with_suffix(".exe")).is_file():
+        # On Windows, MinGW appends .exe to the linker output, so the
+        # binary on disk is denoise_wav.exe while the drills invoke it
+        # extensionless (the shell resolves that; isfile() does not).
+        denoise = denoise.with_suffix(".exe")
     if not denoise.is_file():
         print("FAIL: %s not built (run tests/run_drills.sh first)" % denoise)
         return 1
